@@ -1,4 +1,4 @@
-package dalili.com.dalili.infra.audit;
+package dalili.com.dalili.infra.audit.health;
 
 import lombok.Getter;
 

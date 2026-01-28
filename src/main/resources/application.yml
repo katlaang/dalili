@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: jdbc:sqlite:dalili.db
+    driver-class-name: org.sqlite.JDBC
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    database-platform: org.hibernate.community.dialect.SQLiteDialect

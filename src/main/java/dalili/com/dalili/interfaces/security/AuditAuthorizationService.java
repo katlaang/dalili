@@ -1,4 +1,6 @@
 package dalili.com.dalili.interfaces.security;
 
-public class AuditAuthorizationService {
+public interface AuditAuthorizationService {
+    boolean canExportAudit(String physicianId);
 }
+

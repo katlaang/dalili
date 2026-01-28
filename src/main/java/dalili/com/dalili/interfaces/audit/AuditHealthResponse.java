@@ -1,4 +1,11 @@
 package dalili.com.dalili.interfaces.audit;
 
-public class AuditHealthResponse {
+import java.time.Instant;
+
+public record AuditHealthResponse(
+        boolean tamperDetected,
+        Instant lastSuccessfulVerification,
+        int verifiedEventCount
+) {
 }
+

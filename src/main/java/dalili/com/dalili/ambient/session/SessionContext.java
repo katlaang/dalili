@@ -1,4 +1,4 @@
-package dalili.com.dalili.ambient;
+package dalili.com.dalili.ambient.session;
 
 import org.springframework.stereotype.Component;
 
@@ -26,5 +26,9 @@ public class SessionContext {
 
     public String physicianId() {
         return PHYSICIAN_ID.get();
+    }
+
+    public boolean isActive() {
+        return SESSION_ID.get() != null && PHYSICIAN_ID.get() != null;
     }
 }

@@ -1,4 +1,12 @@
 package dalili.com.dalili.infra.audit.sync;
 
-public class AuditSyncPayload {
+import dalili.com.dalili.infra.audit.AuditEvent;
+
+import java.util.List;
+
+public record AuditSyncPayload(
+        String lastKnownHash,
+        List<AuditEvent> newEvents
+) {
 }
+

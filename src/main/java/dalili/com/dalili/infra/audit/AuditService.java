@@ -32,6 +32,20 @@ public class AuditService {
         try {
             Instant timestamp = Instant.now();
 
+            // Time integrity check
+            Instant lastTimestamp = repository
+                    .findTopByOrderByTimestampDesc()
+                    .map(AuditEvent::getTimestamp)
+                    .orElse(null);
+
+            if (lastTimestamp != null && timestamp.isBefore(lastTimestamp)) {
+                throw new ClockManipulationException(
+                        "Audit rejected: current time " + timestamp +
+                                " is before previous event " + lastTimestamp +
+                                ". Possible clock manipulation."
+                );
+            }
+
             String previousHash = repository
                     .findTopByOrderByTimestampDesc()
                     .map(AuditEvent::getHash)

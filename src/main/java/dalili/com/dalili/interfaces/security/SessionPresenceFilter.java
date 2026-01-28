@@ -10,6 +10,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 
+
 @Component
 public class SessionPresenceFilter extends OncePerRequestFilter {
 
@@ -26,8 +27,10 @@ public class SessionPresenceFilter extends OncePerRequestFilter {
             FilterChain filterChain
     ) throws ServletException, IOException {
 
-        // Allow health check unauthenticated
-        if (request.getRequestURI().equals("/health")) {
+        String uri = request.getRequestURI();
+
+        // Allow health check and anchor operations without clinical session
+        if (uri.equals("/health") || uri.startsWith("/api/anchor/")) {
             filterChain.doFilter(request, response);
             return;
         }

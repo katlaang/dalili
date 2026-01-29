@@ -5,6 +5,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -23,14 +24,17 @@ public class SessionPresenceFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,
-            HttpServletResponse response,
-            FilterChain filterChain
+            @NonNull HttpServletResponse response,
+            @NonNull FilterChain filterChain
     ) throws ServletException, IOException {
 
         String uri = request.getRequestURI();
 
         // Allow health check and anchor operations without clinical session
-        if (uri.equals("/health") || uri.startsWith("/api/anchor/")) {
+        if (uri.equals("/health") ||
+                uri.equals("/audit/health") ||
+                uri.startsWith("/api/auth/") ||
+                uri.startsWith("/api/anchor/")) {
             filterChain.doFilter(request, response);
             return;
         }

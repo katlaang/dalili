@@ -7,3 +7,12 @@ spring:
       ddl-auto: update
     show-sql: false
     database-platform: org.hibernate.community.dialect.SQLiteDialect
+dalili:
+  jwt:
+    secret: your-256-bit-secret-key-for-jwt-signing-min-32-chars
+    staff-expiration-hours: 12
+    patient-expiration-hours: 24
+    kiosk-expiration-minutes: 10
+  session:
+    patient-inactivity-seconds: 300   # 5 minutes
+    staff-inactivity-seconds: 1800    # 30 minutes

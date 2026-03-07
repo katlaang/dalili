@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: jdbc:sqlite:dalili.db
+    url: jdbc:sqlite:base.db
     driver-class-name: org.sqlite.JDBC
   jpa:
     hibernate:

@@ -1,12 +1,13 @@
 spring:
   datasource:
-    url: jdbc:sqlite:base.db
-    driver-class-name: org.sqlite.JDBC
+    url: jdbc:postgresql://localhost:5433/dalili
+    username: postgres
+    password: admin
+    driver-class-name: org.postgresql.Driver
   jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
       ddl-auto: update
-    show-sql: false
-    database-platform: org.hibernate.community.dialect.SQLiteDialect
 dalili:
   jwt:
     secret: your-256-bit-secret-key-for-jwt-signing-min-32-chars

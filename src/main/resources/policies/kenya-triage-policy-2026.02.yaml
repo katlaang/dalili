@@ -1,0 +1,951 @@
+# Kenya Triage Policy Package
+# Version: KE-TRIAGE-2026.02
+# Effective: January 2026
+# Target: Pilot clinics in Kenya
+#
+# TRIAGE PHILOSOPHY: Hybrid Model (C)
+# - Layer 1: Hard emergency overrides (non-negotiable, bypass scoring)
+# - Layer 2: Weighted escalation scoring (for non-emergency cases)
+#
+# This policy is synced to facilities and executed locally (100% offline).
+# All triage decisions log this version for legal defensibility.
+#
+# IMPORTANT: Emergency rules execute WITHOUT internet dependency.
+
+version: "KE-TRIAGE-2026.02"
+country: "KE"
+country_name: "Kenya"
+effective_date: "2026-01-01"
+expires_date: "2027-01-01"
+description: "Kenya pilot triage policy with emphasis on malaria, dehydration, and infectious disease. Hybrid triage model with hard emergency overrides."
+
+# =============================================================================
+# TRIAGE PHILOSOPHY
+# =============================================================================
+# This section documents the clinical logic for auditors and reviewers.
+
+triage_model:
+  type: "HYBRID_C"
+  description: "Hard emergency overrides + weighted escalation scoring"
+
+  layer_1_emergency_overrides:
+    description: "Non-negotiable immediate EMERGENCY classification"
+    triggers:
+      - "Any emergency vital threshold breached"
+      - "Any emergency symptom cluster matched"
+      - "Any critical red flag phrase detected"
+      - "GCS below emergency cutoff"
+    behavior:
+      - "Bypass scoring completely"
+      - "Immediate EMERGENCY classification"
+      - "Trigger protocol checklist"
+      - "Full-screen modal interrupt (red)"
+      - "Auto-advance queue to top"
+      - "Notify responsible staff"
+      - "Lock priority (override requires justification)"
+    internet_required: false
+
+  layer_2_escalation_scoring:
+    description: "Weighted scoring for non-emergency cases"
+    applies_when: "No emergency override triggered"
+    output:
+      - "Score 1-2 → Level 1 (passive panel)"
+      - "Score 3-4 → Level 2 (soft interrupt, acknowledgment required)"
+      - "Score ≥5 → Level 3 (urgent high priority, NOT emergency)"
+
+# =============================================================================
+# VITAL SIGN THRESHOLDS
+# =============================================================================
+# Thresholds calibrated for Kenyan facility conditions.
+# SpO2 thresholds account for altitude variation and device reliability.
+
+vital_thresholds:
+
+  adult: # Age >= 14
+    emergency:
+      systolic_bp_below: 90
+      diastolic_bp_above: 120
+      oxygen_saturation_below: 92  # Hard emergency cutoff
+      heart_rate_above: 130
+      heart_rate_below: 40
+      temperature_above: 40.0
+      temperature_below: 35.0
+      respiratory_rate_above: 30
+      respiratory_rate_below: 8
+      gcs_below: 9
+    urgent:
+      systolic_bp_below: 100
+      systolic_bp_above: 180
+      diastolic_bp_above: 110
+      oxygen_saturation_below: 94  # Changed from 95 - accounts for altitude/device variance
+      heart_rate_above: 120
+      heart_rate_below: 50
+      temperature_above: 39.5
+      temperature_below: 35.5
+      respiratory_rate_above: 24
+      respiratory_rate_below: 10
+      gcs_below: 13
+    standard:
+      systolic_bp_above: 140
+      diastolic_bp_above: 90
+      heart_rate_above: 100
+      temperature_above: 38.5
+      respiratory_rate_above: 20
+
+  # Pediatric thresholds split by age band for clinical accuracy
+  pediatric_1_2: # Age 1-2 years
+    emergency:
+      oxygen_saturation_below: 90
+      heart_rate_above: 180  # Normal can be up to 160
+      heart_rate_below: 80
+      temperature_above: 40.5
+      temperature_below: 35.0
+      respiratory_rate_above: 50
+      respiratory_rate_below: 15
+    urgent:
+      oxygen_saturation_below: 94
+      heart_rate_above: 170
+      temperature_above: 39.5
+      respiratory_rate_above: 45
+
+  pediatric_3_5: # Age 3-5 years
+    emergency:
+      oxygen_saturation_below: 90
+      heart_rate_above: 160  # Normal up to 140
+      heart_rate_below: 70
+      temperature_above: 40.5
+      temperature_below: 35.0
+      respiratory_rate_above: 45
+      respiratory_rate_below: 12
+    urgent:
+      oxygen_saturation_below: 94
+      heart_rate_above: 150
+      temperature_above: 39.5
+      respiratory_rate_above: 40
+
+  pediatric_6_10: # Age 6-10 years
+    emergency:
+      oxygen_saturation_below: 90
+      heart_rate_above: 140  # Normal up to 120
+      heart_rate_below: 60
+      temperature_above: 40.5
+      temperature_below: 35.0
+      respiratory_rate_above: 35
+      respiratory_rate_below: 10
+    urgent:
+      oxygen_saturation_below: 94
+      heart_rate_above: 130
+      temperature_above: 39.5
+      respiratory_rate_above: 30
+
+  pediatric_11_13: # Age 11-13 years
+    emergency:
+      oxygen_saturation_below: 90
+      heart_rate_above: 130  # Normal up to 100
+      heart_rate_below: 55
+      temperature_above: 40.5
+      temperature_below: 35.0
+      respiratory_rate_above: 30
+      respiratory_rate_below: 10
+    urgent:
+      oxygen_saturation_below: 94
+      heart_rate_above: 120
+      temperature_above: 39.5
+      respiratory_rate_above: 25
+
+  infant: # Age < 1 year
+    emergency:
+      oxygen_saturation_below: 90
+      heart_rate_above: 200
+      heart_rate_below: 80
+      temperature_above: 40.0
+      temperature_below: 36.0
+      respiratory_rate_above: 70
+      respiratory_rate_below: 20
+    urgent:
+      oxygen_saturation_below: 94
+      heart_rate_above: 180
+      temperature_above: 39.0
+      respiratory_rate_above: 60
+
+# =============================================================================
+# RED FLAG PHRASES (English + Swahili)
+# =============================================================================
+# Keyword detection for critical presentations.
+# Case-insensitive matching with word boundary awareness.
+# Text normalization: lowercase, punctuation removed, token-based.
+
+red_flag_phrases:
+  critical:
+    # Cardiovascular
+    - phrase: "worst headache"
+      swahili: [ "kichwa mbaya zaidi", "maumivu makubwa ya kichwa" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Subarachnoid hemorrhage", "Meningitis" ]
+    - phrase: "crushing chest pain"
+      swahili: [ "maumivu makali ya kifua", "kifua kinaniuma sana" ]
+      category: "CARDIOVASCULAR"
+      suggests: [ "MI", "Aortic dissection" ]
+    - phrase: "tearing chest pain"
+      swahili: [ "maumivu ya kurarua kifua" ]
+      category: "CARDIOVASCULAR"
+      suggests: [ "Aortic dissection" ]
+    - phrase: "chest pain radiating to arm"
+      swahili: [ "maumivu ya kifua hadi mkono" ]
+      category: "CARDIOVASCULAR"
+      suggests: [ "MI" ]
+
+    # Respiratory
+    - phrase: "can't breathe"
+      swahili: [ "siwezi kupumua", "kupumua ni shida", "ninashindwa kupumua" ]
+      category: "RESPIRATORY"
+      suggests: [ "Respiratory failure", "Anaphylaxis", "PE" ]
+    - phrase: "difficulty breathing"
+      swahili: [ "shida ya kupumua", "kupumua kwa shida" ]
+      category: "RESPIRATORY"
+      suggests: [ "Respiratory distress", "Asthma", "PE" ]
+    - phrase: "gasping for air"
+      swahili: [ "kupumua kwa shida kubwa" ]
+      category: "RESPIRATORY"
+      suggests: [ "Respiratory failure" ]
+
+    # Neurological
+    - phrase: "sudden weakness"
+      swahili: [ "udhaifu wa ghafla", "mwili kulegea ghafla" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Stroke", "TIA" ]
+    - phrase: "sudden numbness"
+      swahili: [ "ganzi la ghafla", "kuhisi ganzi" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Stroke", "TIA" ]
+    - phrase: "face drooping"
+      swahili: [ "uso umelegea", "uso umeanguka" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Stroke" ]
+    - phrase: "slurred speech"
+      swahili: [ "kusema kwa shida", "maneno hayaeleweki" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Stroke", "Hypoglycemia" ]
+    - phrase: "seizure"
+      swahili: [ "kifafa", "degedege", "kuanguka na kutetemeka" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Seizure disorder", "Eclampsia", "Meningitis" ]
+    - phrase: "unconscious"
+      swahili: [ "amezimia", "hajitambui", "amepoteza fahamu" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Syncope", "Stroke", "Hypoglycemia", "Overdose" ]
+    - phrase: "passed out"
+      swahili: [ "ameanguka", "amezimia" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Syncope", "Hypoglycemia", "Cardiac arrhythmia" ]
+
+    # GI/Hemorrhage
+    - phrase: "vomiting blood"
+      swahili: [ "kutapika damu", "anatapika damu" ]
+      category: "GI_HEMORRHAGE"
+      suggests: [ "Upper GI bleed", "Peptic ulcer" ]
+    - phrase: "coughing blood"
+      swahili: [ "kukohoa damu", "damu inatoka anapokohoa" ]
+      category: "RESPIRATORY"
+      suggests: [ "TB", "PE", "Lung cancer" ]
+    - phrase: "blood in stool"
+      swahili: [ "damu kwenye choo", "kinyesi kina damu" ]
+      category: "GI_HEMORRHAGE"
+      suggests: [ "GI bleed", "Dysentery" ]
+
+    # Obstetric
+    - phrase: "heavy vaginal bleeding"
+      swahili: [ "kutoka damu nyingi", "damu nyingi ukeni" ]
+      category: "OBSTETRIC"
+      suggests: [ "Miscarriage", "Placenta previa", "Ectopic" ]
+    - phrase: "pregnant and bleeding"
+      swahili: [ "mjamzito anatoka damu", "damu wakati wa ujauzito" ]
+      category: "OBSTETRIC"
+      suggests: [ "Ectopic pregnancy", "Miscarriage", "Placental abruption" ]
+
+  high:
+    # General
+    - phrase: "severe abdominal pain"
+      swahili: [ "maumivu makali ya tumbo", "tumbo linaniuma sana" ]
+      category: "ABDOMINAL"
+      suggests: [ "Appendicitis", "Ectopic pregnancy", "Bowel obstruction" ]
+    - phrase: "severe headache"
+      swahili: [ "kichwa kinaniuma sana", "maumivu makali ya kichwa" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Migraine", "Meningitis", "Hypertensive crisis" ]
+    - phrase: "high fever"
+      swahili: [ "homa kali", "joto kali", "mwili moto sana" ]
+      category: "INFECTIOUS"
+      suggests: [ "Malaria", "Sepsis", "Meningitis" ]
+    - phrase: "confusion"
+      swahili: [ "kuchanganyikiwa", "hajui yuko wapi", "anaongea ovyo" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Delirium", "Hypoglycemia", "Sepsis", "Cerebral malaria" ]
+    - phrase: "altered mental status"
+      swahili: [ "amebadilika kiakili", "hafikirii vizuri" ]
+      category: "NEUROLOGICAL"
+      suggests: [ "Delirium", "Stroke", "Metabolic" ]
+
+    # Kenya-specific infectious
+    - phrase: "yellow eyes"
+      swahili: [ "macho ya njano", "macho yamebadilika rangi" ]
+      category: "HEPATIC"
+      suggests: [ "Malaria", "Hepatitis", "Yellow fever" ]
+    - phrase: "dark urine"
+      swahili: [ "mkojo mweusi", "mkojo wa rangi ya chai" ]
+      category: "RENAL"
+      suggests: [ "Dehydration", "Malaria", "Hepatitis" ]
+    - phrase: "not urinating"
+      swahili: [ "hakojoi", "mkojo hauji", "hajui mkojo" ]
+      category: "RENAL"
+      suggests: [ "Dehydration", "Renal failure" ]
+    - phrase: "bloody diarrhea"
+      swahili: [ "kuharisha damu", "kinyesi kina damu" ]
+      category: "GI_INFECTIOUS"
+      suggests: [ "Dysentery", "Cholera" ]
+    - phrase: "profuse watery diarrhea"
+      swahili: [ "kuharisha maji mengi", "kuendesha sana" ]
+      category: "GI_INFECTIOUS"
+      suggests: [ "Cholera", "Viral gastroenteritis" ]
+
+    # Pediatric-specific
+    - phrase: "child not drinking"
+      swahili: [ "mtoto hakunywi", "mtoto anakataa maji" ]
+      category: "PEDIATRIC"
+      suggests: [ "Dehydration", "Sepsis" ]
+    - phrase: "sunken fontanelle"
+      swahili: [ "utosi umezama", "kichwa kimezama" ]
+      category: "PEDIATRIC"
+      suggests: [ "Severe dehydration" ]
+    - phrase: "floppy baby"
+      swahili: [ "mtoto amelegea", "mtoto hana nguvu" ]
+      category: "PEDIATRIC"
+      suggests: [ "Sepsis", "Meningitis", "Hypoglycemia" ]
+    - phrase: "not feeding"
+      swahili: [ "mtoto hanyonyi", "mtoto hakai kunyonya" ]
+      category: "PEDIATRIC"
+      suggests: [ "Sepsis", "Dehydration" ]
+
+    # Chills/rigors (common malaria presentation)
+    - phrase: "severe chills"
+      swahili: [ "baridi kali", "kutetemeka kwa baridi" ]
+      category: "INFECTIOUS"
+      suggests: [ "Malaria", "Sepsis", "UTI with bacteremia" ]
+
+  moderate:
+    - phrase: "persistent vomiting"
+      swahili: [ "kutapika sana", "kutapika bila kusimama" ]
+      category: "GI"
+      suggests: [ "Gastroenteritis", "Obstruction", "Pregnancy" ]
+    - phrase: "can't keep anything down"
+      swahili: [ "kila kitu anatapika", "hakuna kinachokaa tumboni" ]
+      category: "GI"
+      suggests: [ "Gastroenteritis", "Obstruction" ]
+    - phrase: "pain when urinating"
+      swahili: [ "maumivu wakati wa kukojoa", "uchungu wa mkojo" ]
+      category: "UROLOGICAL"
+      suggests: [ "UTI", "STI" ]
+    - phrase: "swollen leg"
+      swahili: [ "mguu umevimba", "kuvimba kwa mguu" ]
+      category: "VASCULAR"
+      suggests: [ "DVT", "Cellulitis" ]
+    - phrase: "rash with fever"
+      swahili: [ "upele na homa", "vipele na joto" ]
+      category: "INFECTIOUS"
+      suggests: [ "Viral exanthem", "Meningococcemia", "Dengue" ]
+
+# =============================================================================
+# SYMPTOM CLUSTERS
+# =============================================================================
+# Pattern matching for multi-symptom presentations.
+# Uses heuristic_weight (not "confidence") - these are not empirically validated.
+
+symptom_clusters:
+  - id: "cardiac_mi"
+    symptoms: [ "chest pain", "shortness of breath", "diaphoresis", "nausea" ]
+    swahili_symptoms: [ "maumivu ya kifua", "shida ya kupumua", "kutoka jasho", "kichefuchefu" ]
+    minimum_match: 2
+    suggests:
+      - code: "I21.9"
+        name: "Acute myocardial infarction"
+        rule_out: true
+        heuristic_weight: 0.7  # Renamed from confidence
+      - code: "I26.9"
+        name: "Pulmonary embolism"
+        rule_out: true
+        heuristic_weight: 0.5
+    urgency: EMERGENCY
+    protocol: "chest_pain"
+
+  - id: "stroke"
+    symptoms: [ "weakness", "numbness", "speech difficulty", "face drooping", "confusion" ]
+    swahili_symptoms: [ "udhaifu", "ganzi", "kusema kwa shida", "uso umelegea" ]
+    minimum_match: 2
+    suggests:
+      - code: "I63.9"
+        name: "Cerebral infarction"
+        rule_out: true
+        heuristic_weight: 0.7
+      - code: "I61.9"
+        name: "Intracerebral hemorrhage"
+        rule_out: true
+        heuristic_weight: 0.5
+    urgency: EMERGENCY
+    protocol: "stroke"
+
+  - id: "meningitis"
+    symptoms: [ "fever", "stiff neck", "headache", "photophobia", "vomiting" ]
+    swahili_symptoms: [ "homa", "shingo ngumu", "kichwa", "mwanga unaumiza macho" ]
+    minimum_match: 3
+    suggests:
+      - code: "G03.9"
+        name: "Meningitis"
+        rule_out: true
+        heuristic_weight: 0.8
+    urgency: EMERGENCY
+    protocol: "meningitis"
+
+  - id: "severe_malaria"
+    symptoms: [ "fever", "confusion", "jaundice", "dark urine", "convulsions" ]
+    swahili_symptoms: [ "homa", "kuchanganyikiwa", "manjano", "mkojo mweusi", "degedege" ]
+    minimum_match: 2
+    suggests:
+      - code: "B50.0"
+        name: "Severe malaria (P. falciparum)"
+        rule_out: false
+        heuristic_weight: 0.8
+    urgency: EMERGENCY
+    protocol: "severe_malaria"
+    tests: [ "Malaria RDT", "Blood smear", "Blood glucose", "Hemoglobin" ]
+
+  - id: "uncomplicated_malaria"
+    symptoms: [ "fever", "chills", "headache", "body aches", "fatigue" ]
+    swahili_symptoms: [ "homa", "baridi", "kichwa", "maumivu ya mwili", "uchovu" ]
+    minimum_match: 3
+    suggests:
+      - code: "B50.9"
+        name: "Malaria, unspecified"
+        rule_out: false
+        heuristic_weight: 0.7
+    urgency: URGENT
+    tests: [ "Malaria RDT", "Blood smear" ]
+
+  - id: "cholera_like"
+    symptoms: [ "profuse watery diarrhea", "vomiting", "dehydration", "leg cramps" ]
+    swahili_symptoms: [ "kuharisha maji mengi", "kutapika", "mwili kukauka", "miguu kusokota" ]
+    minimum_match: 2
+    suggests:
+      - code: "A00.9"
+        name: "Cholera"
+        rule_out: true
+        heuristic_weight: 0.6
+    urgency: EMERGENCY
+    protocol: "cholera"
+
+  - id: "dysentery"
+    symptoms: [ "bloody diarrhea", "fever", "abdominal cramps", "tenesmus" ]
+    swahili_symptoms: [ "kuharisha damu", "homa", "tumbo kusokota" ]
+    minimum_match: 2
+    suggests:
+      - code: "A03.9"
+        name: "Shigellosis"
+        rule_out: false
+        heuristic_weight: 0.6
+      - code: "A06.0"
+        name: "Amoebic dysentery"
+        rule_out: false
+        heuristic_weight: 0.5
+    urgency: URGENT
+    tests: [ "Stool microscopy", "Stool culture" ]
+
+  - id: "severe_dehydration_infant"
+    symptoms: [ "diarrhea", "vomiting", "sunken eyes", "lethargy", "poor feeding" ]
+    swahili_symptoms: [ "kuharisha", "kutapika", "macho yamezama", "uchovu", "hanyonyi" ]
+    minimum_match: 3
+    age_group: "infant"
+    suggests:
+      - code: "E86.0"
+        name: "Severe dehydration"
+        rule_out: false
+        heuristic_weight: 0.9
+    urgency: EMERGENCY
+    protocol: "pediatric_dehydration_infant"
+
+  - id: "severe_dehydration_child"
+    symptoms: [ "diarrhea", "vomiting", "sunken eyes", "lethargy", "skin pinch slow" ]
+    swahili_symptoms: [ "kuharisha", "kutapika", "macho yamezama", "uchovu" ]
+    minimum_match: 3
+    age_group: "pediatric"
+    suggests:
+      - code: "E86.0"
+        name: "Severe dehydration"
+        rule_out: false
+        heuristic_weight: 0.9
+    urgency: EMERGENCY
+    protocol: "pediatric_dehydration_child"
+
+  - id: "neonatal_sepsis"
+    symptoms: [ "fever", "poor feeding", "lethargy", "irritability", "jaundice" ]
+    swahili_symptoms: [ "homa", "hanyonyi", "uchovu", "kulia sana", "manjano" ]
+    minimum_match: 3
+    age_group: "infant"
+    suggests:
+      - code: "P36.9"
+        name: "Neonatal sepsis"
+        rule_out: true
+        heuristic_weight: 0.7
+    urgency: EMERGENCY
+    protocol: "neonatal_sepsis"
+
+  - id: "ectopic_pregnancy"
+    symptoms: [ "abdominal pain", "vaginal bleeding", "missed period", "dizziness", "shoulder pain" ]
+    swahili_symptoms: [ "maumivu ya tumbo", "kutoka damu", "hedhi imechelewa", "kizunguzungu" ]
+    minimum_match: 3
+    sex: "F"
+    suggests:
+      - code: "O00.9"
+        name: "Ectopic pregnancy"
+        rule_out: true
+        heuristic_weight: 0.7
+    urgency: EMERGENCY
+    protocol: "ectopic"
+
+  - id: "eclampsia"
+    symptoms: [ "seizure", "high blood pressure", "pregnant", "headache", "visual changes" ]
+    swahili_symptoms: [ "kifafa", "presha juu", "mjamzito", "kichwa", "macho hayaoni vizuri" ]
+    minimum_match: 2
+    sex: "F"
+    suggests:
+      - code: "O15.0"
+        name: "Eclampsia"
+        rule_out: true
+        heuristic_weight: 0.8
+    urgency: EMERGENCY
+    protocol: "eclampsia"
+
+  - id: "pneumonia"
+    symptoms: [ "cough", "fever", "difficulty breathing", "chest pain", "rapid breathing" ]
+    swahili_symptoms: [ "kikohozi", "homa", "shida ya kupumua", "maumivu ya kifua" ]
+    minimum_match: 3
+    suggests:
+      - code: "J18.9"
+        name: "Pneumonia"
+        rule_out: false
+        heuristic_weight: 0.7
+    urgency: URGENT
+    tests: [ "Chest X-ray", "SpO2", "CBC" ]
+
+  - id: "tb_suspect"
+    symptoms: [ "cough more than 2 weeks", "weight loss", "night sweats", "fever", "blood in sputum" ]
+    swahili_symptoms: [ "kikohozi wiki mbili", "kupunguza uzito", "kutoka jasho usiku", "homa" ]
+    minimum_match: 3
+    suggests:
+      - code: "A15.0"
+        name: "Pulmonary tuberculosis"
+        rule_out: false
+        heuristic_weight: 0.6
+    urgency: URGENT
+    tests: [ "Sputum AFB", "GeneXpert", "Chest X-ray" ]
+    isolation_required: true
+
+# =============================================================================
+# EMERGENCY PROTOCOLS
+# =============================================================================
+# Step-by-step checklists for critical presentations.
+# Each step is trackable and audited.
+# Age-specific protocols where dosing differs.
+
+protocols:
+  chest_pain:
+    name: "Chest Pain Protocol"
+    urgency: EMERGENCY
+    time_critical: true
+    steps:
+      - id: "cp_1"
+        action: "Obtain 12-lead ECG"
+        time_limit_minutes: 10
+        required: true
+      - id: "cp_2"
+        action: "Check blood pressure both arms"
+        required: true
+      - id: "cp_3"
+        action: "Obtain SpO2"
+        required: true
+      - id: "cp_4"
+        action: "Apply oxygen if SpO2 < 94%"
+        conditional: true
+      - id: "cp_5"
+        action: "Aspirin 300mg chewed (if no contraindication)"
+        required: true
+        contraindications: [ "aspirin allergy", "active bleeding", "recent GI bleed" ]
+      - id: "cp_6"
+        action: "Establish IV access (large bore)"
+        required: true
+      - id: "cp_7"
+        action: "Notify physician immediately"
+        required: true
+
+  stroke:
+    name: "Stroke Protocol"
+    urgency: EMERGENCY
+    time_critical: true
+    steps:
+      - id: "str_1"
+        action: "Document exact time of symptom onset"
+        required: true
+        note: "Critical for thrombolysis window"
+      - id: "str_2"
+        action: "Check blood glucose"
+        required: true
+      - id: "str_3"
+        action: "Check blood pressure"
+        required: true
+      - id: "str_4"
+        action: "Perform FAST assessment (Face-Arm-Speech-Time)"
+        required: true
+      - id: "str_5"
+        action: "Establish IV access"
+        required: true
+      - id: "str_6"
+        action: "NPO (nothing by mouth)"
+        required: true
+      - id: "str_7"
+        action: "Notify physician immediately"
+        required: true
+
+  meningitis:
+    name: "Meningitis Protocol"
+    urgency: EMERGENCY
+    steps:
+      - id: "men_1"
+        action: "Isolate patient (droplet precautions)"
+        required: true
+      - id: "men_2"
+        action: "Establish IV access"
+        required: true
+      - id: "men_3"
+        action: "Blood cultures before antibiotics if possible"
+        required: true
+        note: "Do not delay antibiotics for cultures"
+      - id: "men_4"
+        action: "Empiric antibiotics within 1 hour of presentation"
+        time_limit_minutes: 60
+        required: true
+      - id: "men_5"
+        action: "Check blood glucose"
+        required: true
+      - id: "men_6"
+        action: "Notify physician immediately"
+        required: true
+
+  severe_malaria:
+    name: "Severe Malaria Protocol"
+    urgency: EMERGENCY
+    region_specific: true
+    steps:
+      - id: "mal_1"
+        action: "Malaria RDT or blood smear"
+        required: true
+      - id: "mal_2"
+        action: "Check blood glucose (hypoglycemia common)"
+        required: true
+      - id: "mal_3"
+        action: "Establish IV access"
+        required: true
+      - id: "mal_4"
+        action: "IV Artesunate - weight-based dosing per Kenya guidelines"
+        required: true
+        note: "Adult: 2.4mg/kg. Refer to dosing chart."
+      - id: "mal_5"
+        action: "IV fluids for dehydration"
+        required: true
+      - id: "mal_6"
+        action: "Check hemoglobin/hematocrit"
+        required: true
+      - id: "mal_7"
+        action: "Monitor urine output"
+        required: true
+      - id: "mal_8"
+        action: "Notify physician"
+        required: true
+
+  cholera:
+    name: "Cholera/Severe Diarrhea Protocol"
+    urgency: EMERGENCY
+    region_specific: true
+    steps:
+      - id: "chol_1"
+        action: "Assess dehydration status using WHO scale"
+        required: true
+      - id: "chol_2"
+        action: "Weigh patient"
+        required: true
+      - id: "chol_3_adult"
+        action: "ADULT: IV Ringer's Lactate 100ml/kg - give 30ml/kg in first 30min, then 70ml/kg over 2.5hrs"
+        required: true
+        age_group: "adult"
+      - id: "chol_3_child"
+        action: "CHILD >1yr: IV Ringer's Lactate 100ml/kg - give 30ml/kg in first 1hr, then 70ml/kg over 5hrs"
+        required: true
+        age_group: "pediatric"
+      - id: "chol_3_infant"
+        action: "INFANT <1yr: IV Ringer's Lactate 100ml/kg - give 30ml/kg in first 1hr, then 70ml/kg over 5hrs"
+        required: true
+        age_group: "infant"
+      - id: "chol_4"
+        action: "Begin ORS as soon as patient can drink"
+        required: true
+      - id: "chol_5"
+        action: "Stool sample for culture"
+        required: true
+      - id: "chol_6"
+        action: "Isolate patient"
+        required: true
+      - id: "chol_7"
+        action: "Notify public health authorities"
+        required: true
+
+  pediatric_dehydration_infant:
+    name: "Infant (<1yr) Severe Dehydration Protocol"
+    urgency: EMERGENCY
+    age_group: "infant"
+    steps:
+      - id: "ped_inf_1"
+        action: "Weigh infant"
+        required: true
+      - id: "ped_inf_2"
+        action: "Assess using WHO IMCI criteria"
+        required: true
+      - id: "ped_inf_3"
+        action: "Check blood glucose"
+        required: true
+      - id: "ped_inf_4"
+        action: "IV or IO access"
+        required: true
+      - id: "ped_inf_5"
+        action: "IV Ringer's Lactate 30ml/kg over 1 hour, then reassess"
+        required: true
+      - id: "ped_inf_6"
+        action: "If still severely dehydrated: repeat 30ml/kg over 1 hour"
+        conditional: true
+      - id: "ped_inf_7"
+        action: "When able to drink: ORS 5ml/kg/hour"
+        required: true
+      - id: "ped_inf_8"
+        action: "Notify physician"
+        required: true
+
+  pediatric_dehydration_child:
+    name: "Child (1-14yr) Severe Dehydration Protocol"
+    urgency: EMERGENCY
+    age_group: "pediatric"
+    steps:
+      - id: "ped_ch_1"
+        action: "Weigh child"
+        required: true
+      - id: "ped_ch_2"
+        action: "Assess using WHO IMCI criteria"
+        required: true
+      - id: "ped_ch_3"
+        action: "Check blood glucose"
+        required: true
+      - id: "ped_ch_4"
+        action: "IV access"
+        required: true
+      - id: "ped_ch_5"
+        action: "IV Ringer's Lactate 30ml/kg over 30min, then 70ml/kg over 2.5hrs"
+        required: true
+      - id: "ped_ch_6"
+        action: "Reassess after each phase"
+        required: true
+      - id: "ped_ch_7"
+        action: "When able to drink: ORS"
+        required: true
+      - id: "ped_ch_8"
+        action: "Notify physician"
+        required: true
+
+  neonatal_sepsis:
+    name: "Neonatal Sepsis Protocol"
+    urgency: EMERGENCY
+    age_group: "infant"
+    steps:
+      - id: "neo_1"
+        action: "Maintain temperature (skin-to-skin or radiant warmer)"
+        required: true
+      - id: "neo_2"
+        action: "Check blood glucose"
+        required: true
+      - id: "neo_3"
+        action: "Establish IV access"
+        required: true
+      - id: "neo_4"
+        action: "Blood cultures if available (do not delay antibiotics)"
+        required: true
+      - id: "neo_5"
+        action: "Ampicillin + Gentamicin per weight-based dosing"
+        required: true
+        note: "Refer to neonatal dosing chart"
+      - id: "neo_6"
+        action: "Monitor respirations and SpO2"
+        required: true
+      - id: "neo_7"
+        action: "Notify physician immediately"
+        required: true
+
+  ectopic:
+    name: "Suspected Ectopic Pregnancy Protocol"
+    urgency: EMERGENCY
+    steps:
+      - id: "ect_1"
+        action: "Check blood pressure and heart rate"
+        required: true
+      - id: "ect_2"
+        action: "Establish large-bore IV access x2"
+        required: true
+      - id: "ect_3"
+        action: "Type and crossmatch blood"
+        required: true
+      - id: "ect_4"
+        action: "Urine pregnancy test if not already confirmed"
+        required: true
+      - id: "ect_5"
+        action: "Bedside ultrasound if available"
+        conditional: true
+      - id: "ect_6"
+        action: "NPO (nothing by mouth)"
+        required: true
+      - id: "ect_7"
+        action: "Notify surgeon/gynecologist immediately"
+        required: true
+
+  eclampsia:
+    name: "Eclampsia Protocol"
+    urgency: EMERGENCY
+    steps:
+      - id: "ecl_1"
+        action: "Protect airway, position on left side"
+        required: true
+      - id: "ecl_2"
+        action: "IV Magnesium Sulfate 4g loading over 15-20min"
+        required: true
+      - id: "ecl_3"
+        action: "Check blood pressure every 5 minutes"
+        required: true
+      - id: "ecl_4"
+        action: "Establish IV access if not done"
+        required: true
+      - id: "ecl_5"
+        action: "Check fetal heart tones"
+        required: true
+      - id: "ecl_6"
+        action: "Prepare for emergency delivery"
+        required: true
+      - id: "ecl_7"
+        action: "Notify obstetrician immediately"
+        required: true
+
+# =============================================================================
+# ESCALATION SCORING
+# =============================================================================
+# Point-based scoring for Layer 2 (non-emergency cases).
+# Emergency overrides bypass this entirely.
+
+escalation_scoring:
+  points:
+    critical_vital: 3
+    high_risk_symptom: 2
+    moderate_concern: 1
+    critical_phrase: 3
+    high_phrase: 2
+    symptom_cluster_emergency: 3
+    symptom_cluster_urgent: 2
+
+  thresholds:
+    level_1_min: 1
+    level_1_max: 2
+    level_2_min: 3
+    level_2_max: 4
+    level_3_min: 5
+
+  # IMPORTANT: Emergency overrides bypass scoring
+  emergency_override_rules:
+    - "Any emergency vital threshold breached → EMERGENCY (bypass scoring)"
+    - "Any critical red flag phrase → EMERGENCY (bypass scoring)"
+    - "Any emergency cluster matched → EMERGENCY (bypass scoring)"
+    - "GCS < emergency cutoff → EMERGENCY (bypass scoring)"
+
+# =============================================================================
+# SUGGESTED TESTS BY PRESENTATION
+# =============================================================================
+
+suggested_tests:
+  fever_workup:
+    - "Malaria RDT"
+    - "CBC"
+    - "Blood smear"
+    - "Urinalysis"
+
+  respiratory:
+    - "SpO2"
+    - "Chest X-ray"
+    - "Sputum AFB (if cough > 2 weeks)"
+
+  diarrhea:
+    - "Stool microscopy"
+    - "Stool culture"
+    - "Electrolytes (if available)"
+
+  abdominal_pain_female:
+    - "Urine pregnancy test"
+    - "Urinalysis"
+    - "Abdominal ultrasound"
+
+# =============================================================================
+# METADATA
+# =============================================================================
+
+metadata:
+  created_by: "Dalili Health Clinical Team"
+  # REMOVED: "reviewed_by: Kenya MOH" - not formally reviewed
+  alignment: "Aligned with Kenya Essential Package for Health 2023, WHO IMCI Guidelines, Kenya Malaria Treatment Guidelines 2024, WHO ETAT"
+  last_updated: "2026-01-15"
+  next_review: "2026-06-01"
+  version_notes:
+    - "v2026.02: Corrected SpO2 urgent threshold from 95 to 94"
+    - "v2026.02: Split pediatric HR thresholds into 4 age bands"
+    - "v2026.02: Added Swahili phrase equivalents"
+    - "v2026.02: Renamed 'confidence' to 'heuristic_weight'"
+    - "v2026.02: Clarified age-specific fluid dosing in cholera protocol"
+    - "v2026.02: Added explicit triage philosophy documentation"
+  references:
+    - "Kenya Essential Package for Health 2023"
+    - "WHO IMCI Guidelines (Integrated Management of Childhood Illness)"
+    - "Kenya Malaria Treatment Guidelines 2024"
+    - "WHO Emergency Triage Assessment and Treatment (ETAT)"
+    - "WHO Cholera Treatment Guidelines"
+
+# =============================================================================
+# AUDIT LOGGING REQUIREMENTS
+# =============================================================================
+# Every emergency event must log:
+
+audit_requirements:
+  emergency_event_log:
+    - "policy_version"
+    - "triggered_rules (list)"
+    - "original_level"
+    - "final_level"
+    - "override (boolean)"
+    - "override_reason (if applicable)"
+    - "acknowledged_by"
+    - "timestamp"
+
+  override_governance:
+    required_fields:
+      - "structured_reason"
+      - "free_text_comment"
+      - "staff_identity"
+      - "timestamp"
+      - "policy_version"
+      - "triggered_rules_list"

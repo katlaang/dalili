@@ -1,7 +1,7 @@
 package dalili.com.base.application.service;
 
-
 import dalili.com.base.ambient.session.SessionContext;
+import dalili.com.base.domain.escalation.EscalationResponse;
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.queue.QueueTicket;
 import dalili.com.base.domain.triage.TriageAssessment;
@@ -33,11 +33,6 @@ import java.util.UUID;
  * </ul>
  * </p>
  *
- * <p>Triage is the clinical assessment process where a nurse evaluates
- * the patient's condition and assigns a priority level. This service
- * integrates with {@link QueueService} to update queue position based
- * on triage results.</p>
- *
  * <p>All triage actions are audited for clinical governance and quality review.</p>
  *
  * @see TriageAssessment
@@ -55,19 +50,8 @@ public class TriageService {
     private final AuditService auditService;
     private final AuditGuard auditGuard;
     private final SessionContext sessionContext;
+    private final PolicyEscalationService policyEscalationService;
 
-    /**
-     * Constructs a new TriageService with required dependencies.
-     *
-     * @param triageRepository repository for triage assessment persistence
-     * @param queueRepository  repository for queue ticket access
-     * @param patientService   service for patient data access
-     * @param queueService     service for queue priority updates
-     * @param triageCalculator calculator for suggested triage levels
-     * @param auditService     service for audit trail recording
-     * @param auditGuard       guard for session validation
-     * @param sessionContext   current session context
-     */
     public TriageService(
             TriageAssessmentRepository triageRepository,
             QueueTicketRepository queueRepository,
@@ -76,7 +60,8 @@ public class TriageService {
             TriageCalculator triageCalculator,
             AuditService auditService,
             AuditGuard auditGuard,
-            SessionContext sessionContext
+            SessionContext sessionContext,
+            PolicyEscalationService policyEscalationService
     ) {
         this.triageRepository = triageRepository;
         this.queueRepository = queueRepository;
@@ -86,22 +71,11 @@ public class TriageService {
         this.auditService = auditService;
         this.auditGuard = auditGuard;
         this.sessionContext = sessionContext;
+        this.policyEscalationService = policyEscalationService;
     }
 
     // ==================== ASSESSMENT CREATION ====================
 
-    /**
-     * Begins a new triage assessment for a patient in the queue.
-     *
-     * <p>This creates an initial assessment record linked to the queue ticket.
-     * The assessment captures the patient's presenting complaint and prepares
-     * for vital sign recording.</p>
-     *
-     * @param queueTicketId  the queue ticket UUID
-     * @param chiefComplaint the patient's presenting complaint
-     * @return the new triage assessment
-     * @throws TriageException if ticket not found or patient lookup fails
-     */
     @Transactional
     public TriageAssessment beginAssessment(UUID queueTicketId, String chiefComplaint) {
         auditGuard.assertSessionActive();
@@ -135,17 +109,6 @@ public class TriageService {
         return assessment;
     }
 
-    /**
-     * Creates a reassessment for a waiting patient whose condition may have changed.
-     *
-     * <p>Reassessment is performed when a patient's condition appears to be
-     * deteriorating while waiting. The new assessment links to the previous one
-     * for continuity of care documentation.</p>
-     *
-     * @param queueTicketId the queue ticket UUID
-     * @return the new reassessment
-     * @throws TriageException if no previous assessment exists
-     */
     @Transactional
     public TriageAssessment beginReassessment(UUID queueTicketId) {
         auditGuard.assertSessionActive();
@@ -167,18 +130,6 @@ public class TriageService {
 
     // ==================== VITAL SIGNS RECORDING ====================
 
-    /**
-     * Records vital signs for an assessment.
-     *
-     * <p>After recording vitals, the system automatically calculates a suggested
-     * triage level based on the readings. The nurse can then accept or override
-     * this suggestion.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @param vitals       the vital signs data
-     * @return the updated assessment with system triage suggestion
-     * @throws TriageException if assessment not found
-     */
     @Transactional
     public TriageAssessment recordVitals(UUID assessmentId, VitalsInput vitals) {
         auditGuard.assertSessionActive();
@@ -219,26 +170,23 @@ public class TriageService {
         TriageLevel suggested = triageCalculator.calculate(assessment);
         assessment.setSystemTriageLevel(suggested);
 
+        // Policy engine evaluation - may escalate to emergency
+        EscalationResponse escalation = policyEscalationService.evaluate(assessment);
+        if (escalation.isEmergency()) {
+            assessment.setSystemTriageLevel(TriageLevel.RED);
+            auditService.record("TRIAGE_ESCALATED", assessment.getPatientId(),
+                    String.format("Policy engine escalated to RED. Incident: %s",
+                            escalation.incidentId()));
+        }
+
         assessment = triageRepository.save(assessment);
 
         auditService.record("TRIAGE_VITALS_RECORDED", assessment.getPatientId(),
-                String.format("Vitals recorded. System suggests: %s", suggested));
+                String.format("Vitals recorded. System suggests: %s", assessment.getSystemTriageLevel()));
 
         return assessment;
     }
 
-    /**
-     * Records red flag indicators for rapid triage.
-     *
-     * <p>Red flags are critical symptoms that may indicate life-threatening
-     * conditions. Recording these triggers immediate recalculation of the
-     * suggested triage level.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @param redFlags     the red flag data
-     * @return the updated assessment
-     * @throws TriageException if assessment not found
-     */
     @Transactional
     public TriageAssessment recordRedFlags(UUID assessmentId, RedFlagsInput redFlags) {
         auditGuard.assertSessionActive();
@@ -261,6 +209,15 @@ public class TriageService {
         TriageLevel suggested = triageCalculator.calculate(assessment);
         assessment.setSystemTriageLevel(suggested);
 
+        // Policy engine evaluation - may escalate to emergency
+        EscalationResponse escalation = policyEscalationService.evaluate(assessment);
+        if (escalation.isEmergency()) {
+            assessment.setSystemTriageLevel(TriageLevel.RED);
+            auditService.record("TRIAGE_ESCALATED", assessment.getPatientId(),
+                    String.format("Policy engine escalated to RED. Incident: %s",
+                            escalation.incidentId()));
+        }
+
         assessment = triageRepository.save(assessment);
 
         if (assessment.hasRedFlags()) {
@@ -271,18 +228,6 @@ public class TriageService {
         return assessment;
     }
 
-    /**
-     * Records clinical observations and patient history.
-     *
-     * <p>This includes history of present illness, allergies, medications,
-     * past medical history, and nursing notes. These observations provide
-     * context for clinical decision-making.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @param observations the clinical observation data
-     * @return the updated assessment
-     * @throws TriageException if assessment not found
-     */
     @Transactional
     public TriageAssessment recordClinicalObservations(UUID assessmentId, ClinicalObservationsInput observations) {
         auditGuard.assertSessionActive();
@@ -316,16 +261,6 @@ public class TriageService {
 
     // ==================== TRIAGE FINALIZATION ====================
 
-    /**
-     * Accepts the system's triage recommendation and finalizes the assessment.
-     *
-     * <p>This method completes the triage process by accepting the system-calculated
-     * triage level. It updates the queue ticket priority accordingly.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @return the finalized assessment
-     * @throws TriageException if assessment not found
-     */
     @Transactional
     public TriageAssessment acceptSystemTriage(UUID assessmentId) {
         auditGuard.assertSessionActive();
@@ -336,7 +271,6 @@ public class TriageService {
         assessment.acceptSystemTriage();
         assessment = triageRepository.save(assessment);
 
-        // Update queue priority
         updateQueueAfterTriage(assessment);
 
         auditService.record("TRIAGE_ACCEPTED", assessment.getPatientId(),
@@ -345,20 +279,6 @@ public class TriageService {
         return assessment;
     }
 
-    /**
-     * Overrides the system's triage recommendation with clinical judgment.
-     *
-     * <p>Nurses may override the system recommendation when their clinical
-     * assessment differs. A documented reason is required for all overrides
-     * to support quality review and continuous improvement of the triage
-     * algorithm.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @param newLevel     the nurse-determined triage level
-     * @param reason       clinical reasoning for the override (required)
-     * @return the finalized assessment
-     * @throws TriageException if reason is not provided or assessment not found
-     */
     @Transactional
     public TriageAssessment overrideTriage(UUID assessmentId, TriageLevel newLevel, String reason) {
         auditGuard.assertSessionActive();
@@ -376,7 +296,6 @@ public class TriageService {
         assessment.overrideTriage(newLevel, reason, staffId);
         assessment = triageRepository.save(assessment);
 
-        // Update queue priority
         updateQueueAfterTriage(assessment);
 
         auditService.record("TRIAGE_OVERRIDDEN", assessment.getPatientId(),
@@ -388,83 +307,35 @@ public class TriageService {
 
     // ==================== RETRIEVAL ====================
 
-    /**
-     * Retrieves an assessment by ID.
-     *
-     * @param assessmentId the assessment UUID
-     * @return the assessment if found
-     */
     public Optional<TriageAssessment> findById(UUID assessmentId) {
         return triageRepository.findById(assessmentId);
     }
 
-    /**
-     * Retrieves the current assessment for a queue ticket.
-     *
-     * @param queueTicketId the queue ticket UUID
-     * @return the most recent assessment
-     * @throws TriageException if no assessment found
-     */
     public TriageAssessment getAssessmentForTicket(UUID queueTicketId) {
         return triageRepository.findTopByQueueTicketIdOrderByAssessedAtDesc(queueTicketId)
                 .orElseThrow(() -> new TriageException("No assessment found for ticket"));
     }
 
-    /**
-     * Retrieves the current assessment for a queue ticket if it exists.
-     *
-     * @param queueTicketId the queue ticket UUID
-     * @return Optional containing the assessment if found
-     */
     public Optional<TriageAssessment> findAssessmentForTicket(UUID queueTicketId) {
         return triageRepository.findTopByQueueTicketIdOrderByAssessedAtDesc(queueTicketId);
     }
 
-    /**
-     * Retrieves all assessments for a queue ticket (including reassessments).
-     *
-     * @param queueTicketId the queue ticket UUID
-     * @return list of assessments ordered by time descending
-     */
     public List<TriageAssessment> getAssessmentHistoryForTicket(UUID queueTicketId) {
         return triageRepository.findByQueueTicketIdOrderByAssessedAtDesc(queueTicketId);
     }
 
-    /**
-     * Retrieves all assessments for a patient.
-     *
-     * @param patientId the patient UUID
-     * @return list of assessments ordered by time descending
-     */
     public List<TriageAssessment> getAssessmentHistoryForPatient(UUID patientId) {
         return triageRepository.findByPatientIdOrderByAssessedAtDesc(patientId);
     }
 
-    /**
-     * Retrieves the system's triage recommendation summary.
-     *
-     * <p>This summary explains the clinical factors that influenced
-     * the system's triage calculation.</p>
-     *
-     * @param assessmentId the assessment UUID
-     * @return summary explaining the triage calculation
-     * @throws TriageException if assessment not found
-     */
     public String getTriageSummary(UUID assessmentId) {
         TriageAssessment assessment = triageRepository.findById(assessmentId)
                 .orElseThrow(() -> new TriageException("Assessment not found"));
-
         return triageCalculator.generateTriageSummary(assessment);
     }
 
     // ==================== PRIVATE HELPERS ====================
 
-    /**
-     * Updates the queue ticket after triage is finalized.
-     *
-     * <p>This method updates the queue ticket's triage level and
-     * links it to the assessment record.</p>
-     */
     private void updateQueueAfterTriage(TriageAssessment assessment) {
         queueService.updateTriageLevel(
                 assessment.getQueueTicketId(),
@@ -475,21 +346,6 @@ public class TriageService {
 
     // ==================== INPUT RECORDS ====================
 
-    /**
-     * Input data for vital signs recording.
-     *
-     * @param temperatureCelsius     body temperature in degrees Celsius
-     * @param heartRateBpm           heart rate in beats per minute
-     * @param bloodPressureSystolic  systolic blood pressure in mmHg
-     * @param bloodPressureDiastolic diastolic blood pressure in mmHg
-     * @param respiratoryRate        respiratory rate in breaths per minute
-     * @param oxygenSaturation       oxygen saturation (SpO2) percentage
-     * @param weightKg               body weight in kilograms
-     * @param heightCm               height in centimeters
-     * @param painScore              pain level on 0-10 scale
-     * @param bloodGlucoseMmol       blood glucose in mmol/L
-     * @param consciousnessLevel     AVPU consciousness level
-     */
     public record VitalsInput(
             BigDecimal temperatureCelsius,
             Integer heartRateBpm,
@@ -505,18 +361,6 @@ public class TriageService {
     ) {
     }
 
-    /**
-     * Input data for red flag indicators.
-     *
-     * @param chestPain           chest pain or discomfort present
-     * @param difficultyBreathing difficulty breathing or shortness of breath
-     * @param strokeSymptoms      signs of stroke (FAST positive)
-     * @param severebleeding      severe or uncontrolled bleeding
-     * @param allergicReaction    signs of severe allergic reaction
-     * @param alteredMentalStatus altered mental status or confusion
-     * @param pregnancyConcern    pregnant patient with concerning symptoms
-     * @param severeAbdominalPain severe abdominal pain
-     */
     public record RedFlagsInput(
             boolean chestPain,
             boolean difficultyBreathing,
@@ -529,15 +373,6 @@ public class TriageService {
     ) {
     }
 
-    /**
-     * Input data for clinical observations.
-     *
-     * @param historyOfPresentIllness description of illness onset, duration, severity
-     * @param allergies               known allergies (medications, food, environmental)
-     * @param currentMedications      list of current medications
-     * @param pastMedicalHistory      relevant past medical history
-     * @param nursingNotes            free-form nursing observations and notes
-     */
     public record ClinicalObservationsInput(
             String historyOfPresentIllness,
             String allergies,
@@ -547,15 +382,7 @@ public class TriageService {
     ) {
     }
 
-    /**
-     * Exception thrown for triage-related errors.
-     */
     public static class TriageException extends RuntimeException {
-        /**
-         * Creates a new TriageException with the specified message.
-         *
-         * @param message the error message
-         */
         public TriageException(String message) {
             super(message);
         }

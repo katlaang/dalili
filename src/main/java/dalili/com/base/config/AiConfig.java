@@ -22,7 +22,7 @@ public class AiConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AiConfig.class);
 
-    @Value("${dalili.ai.groq_api_key:}")
+    @Value("${dalili.ai.groq-api-key:}")
     private String groqApiKey;
 
     @Value("${dalili.ai.model:llama-3.1-70b-versatile}")

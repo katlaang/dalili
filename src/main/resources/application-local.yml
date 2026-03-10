@@ -1,5 +1,0 @@
-dalili:
-  ai:
-    groq_api_key: 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
-    model: llama-3.1-70b-versatile
-    enabled: true

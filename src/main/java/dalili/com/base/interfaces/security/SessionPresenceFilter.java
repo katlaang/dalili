@@ -29,6 +29,13 @@ public class SessionPresenceFilter extends OncePerRequestFilter {
     ) throws ServletException, IOException {
 
         String uri = request.getRequestURI();
+        String method = request.getMethod();
+
+        // Browser preflight requests do not include auth/session headers.
+        if ("OPTIONS".equalsIgnoreCase(method)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
 
         // Allow health check and anchor operations without clinical session
         if (uri.equals("/health") ||

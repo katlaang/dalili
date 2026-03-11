@@ -122,6 +122,16 @@ public interface QueueTicketRepository extends JpaRepository<QueueTicket, UUID> 
             List<QueueTicket.QueueStatus> statuses
     );
 
+    /**
+     * Finds active tickets for a patient by date and category.
+     */
+    List<QueueTicket> findByPatientIdAndQueueDateAndStatusInAndCategory(
+            UUID patientId,
+            LocalDate queueDate,
+            List<QueueTicket.QueueStatus> statuses,
+            QueueTicket.QueueCategory category
+    );
+
     // ==================== TICKET NUMBER GENERATION ====================
 
     /**

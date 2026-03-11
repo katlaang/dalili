@@ -45,7 +45,19 @@ public record EncounterPreview(
         List<ClinicalAlert> alerts,
 
         // ==================== PREVIOUS ENCOUNTERS ====================
-        List<PreviousEncounterSummary> recentEncounters
+        List<PreviousEncounterSummary> recentEncounters,
+
+        // ==================== REPEAT CARE SUMMARY ====================
+        RepeatCareSummary repeatCareSummary,
+
+        // ==================== DIAGNOSIS HISTORY ====================
+        List<HistoricalDiagnosis> diagnosisHistory,
+
+        // ==================== VITAL TRENDS ====================
+        List<VitalTrendPoint> vitalTrends,
+
+        // ==================== CARE PLAN HISTORY ====================
+        List<CarePlanHistory> carePlanHistory
 ) {
     /**
      * Alert severity levels.
@@ -156,7 +168,11 @@ public record EncounterPreview(
             int targetWaitMinutes,
             boolean isOverdue,
             int missedCallCount,
-            boolean ambulanceArrival
+            boolean ambulanceArrival,
+            String assignedClinicianName,
+            String assignedClinicianEmployeeId,
+            String clinicianAssignmentSource,
+            Instant clinicianAssignedAt
     ) {
         public static QueueSummary from(QueueTicket t) {
             return new QueueSummary(
@@ -169,7 +185,11 @@ public record EncounterPreview(
                     t.getTargetWaitMinutes(),
                     t.isOverdue(),
                     t.getMissedCallCount(),
-                    t.isAmbulanceArrival()
+                    t.isAmbulanceArrival(),
+                    t.getAssignedClinicianName(),
+                    t.getAssignedClinicianEmployeeId(),
+                    t.getClinicianAssignmentSource(),
+                    t.getClinicianAssignedAt()
             );
         }
     }
@@ -303,6 +323,59 @@ public record EncounterPreview(
             String encounterType,
             String primaryDiagnosis,
             String clinicianName
+    ) {
+    }
+
+    /**
+     * Repeat-care relationship summary for current clinician.
+     */
+    public record RepeatCareSummary(
+            boolean repeatPatientWithCurrentClinician,
+            UUID currentClinicianId,
+            String currentClinicianName,
+            int visitsWithCurrentClinician,
+            int totalCompletedVisits,
+            LocalDate lastVisitWithCurrentClinicianAt
+    ) {
+    }
+
+    /**
+     * Historical diagnosis item for quick clinician review.
+     */
+    public record HistoricalDiagnosis(
+            UUID encounterId,
+            LocalDate date,
+            String icdCode,
+            String description,
+            boolean primary,
+            String clinicianName,
+            boolean fromCurrentClinician
+    ) {
+    }
+
+    /**
+     * Historical vitals progression point (used for trend bars/charts).
+     */
+    public record VitalTrendPoint(
+            UUID assessmentId,
+            LocalDate date,
+            Integer bloodPressureSystolic,
+            Integer bloodPressureDiastolic,
+            Integer heartRateBpm,
+            Integer oxygenSaturation,
+            BigDecimal temperatureCelsius,
+            Integer painScore
+    ) {
+    }
+
+    /**
+     * Snapshot of prior care plan suggestions to expose suggested labs/treatment history.
+     */
+    public record CarePlanHistory(
+            UUID encounterId,
+            LocalDate date,
+            String clinicianName,
+            String suggestionSummary
     ) {
     }
 }

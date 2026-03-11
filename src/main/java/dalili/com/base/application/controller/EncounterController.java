@@ -1,7 +1,10 @@
 package dalili.com.base.application.controller;
 
 import dalili.com.base.application.service.AddendumService;
+import dalili.com.base.application.service.ClinicalAiService;
+import dalili.com.base.application.service.ClinicalDecisionSupportService;
 import dalili.com.base.application.service.EncounterService;
+import dalili.com.base.domain.ai.DifferentialResult;
 import dalili.com.base.domain.encounter.model.*;
 import dalili.com.base.domain.triage.TriageAssessment;
 import io.swagger.v3.oas.annotations.Operation;
@@ -10,8 +13,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Optional;
@@ -44,15 +51,23 @@ import java.util.UUID;
 @Tag(name = "Encounters", description = "Clinical encounter management APIs")
 public class EncounterController {
 
+    private static final Logger log = LoggerFactory.getLogger(EncounterController.class);
+
     private final EncounterService encounterService;
     private final AddendumService addendumService;
+    private final ClinicalAiService clinicalAiService;
+    private final ClinicalDecisionSupportService clinicalDecisionSupportService;
 
     public EncounterController(
             EncounterService encounterService,
-            AddendumService addendumService
+            AddendumService addendumService,
+            ClinicalAiService clinicalAiService,
+            ClinicalDecisionSupportService clinicalDecisionSupportService
     ) {
         this.encounterService = encounterService;
         this.addendumService = addendumService;
+        this.clinicalAiService = clinicalAiService;
+        this.clinicalDecisionSupportService = clinicalDecisionSupportService;
     }
 
     // ==================== PRE-ENCOUNTER ====================
@@ -92,12 +107,17 @@ public class EncounterController {
     @PostMapping("/from-queue")
     public ResponseEntity<?> createFromQueue(@RequestBody CreateFromQueueRequest request) {
         try {
+            log.info("Encounter create-from-queue request queueTicketId={} type={}",
+                    request.queueTicketId(), request.encounterType());
             Encounter encounter = encounterService.createFromQueue(
                     request.queueTicketId(),
                     request.encounterType()
             );
+            log.info("Encounter created from queue encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
+            log.warn("Encounter create-from-queue failed queueTicketId={} reason={}",
+                    request.queueTicketId(), e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -162,6 +182,73 @@ public class EncounterController {
     }
 
     @Operation(
+            summary = "Transcribe ambient encounter audio",
+            description = "Uploads captured audio and returns AI transcription text for encounter documentation."
+    )
+    @PostMapping(value = "/{encounterId}/ambient/transcribe", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> transcribeAmbientAudio(
+            @PathVariable UUID encounterId,
+            @RequestPart("audio") MultipartFile audio,
+            @RequestParam(required = false) String language,
+            @RequestParam(required = false) String prompt
+    ) {
+        try {
+            var result = clinicalAiService.transcribeEncounterAudio(
+                    encounterId,
+                    audio.getBytes(),
+                    audio.getOriginalFilename(),
+                    audio.getContentType(),
+                    language,
+                    prompt
+            );
+            return ResponseEntity.ok(result);
+        } catch (ClinicalAiService.ClinicalAiException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse("Unable to transcribe audio: " + e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Generate AI SOAP draft from stored transcript",
+            description = "Uses the encounter transcript to generate a structured SOAP draft. Optionally persists as encounter AI draft."
+    )
+    @PostMapping("/{encounterId}/ai-draft/generate")
+    public ResponseEntity<?> generateAiDraftFromTranscript(
+            @PathVariable UUID encounterId,
+            @RequestBody GenerateAiDraftRequest request
+    ) {
+        try {
+            var result = clinicalAiService.generateSoapDraftFromEncounter(
+                    encounterId,
+                    request.persist(),
+                    request.promptVersion()
+            );
+            return ResponseEntity.ok(result);
+        } catch (ClinicalAiService.ClinicalAiException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Generate differential suggestions",
+            description = "Generates AI-assisted differential diagnoses using encounter and triage context."
+    )
+    @PostMapping("/{encounterId}/differentials/generate")
+    public ResponseEntity<?> generateDifferentials(
+            @PathVariable UUID encounterId,
+            @RequestBody(required = false) GenerateDifferentialRequest request
+    ) {
+        try {
+            String physicalExam = request != null ? request.physicalExam() : null;
+            DifferentialResult result = clinicalAiService.generateEncounterDifferential(encounterId, physicalExam);
+            return ResponseEntity.ok(result);
+        } catch (ClinicalAiService.ClinicalAiException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
             summary = "Record physician note",
             description = "Records physician's own authored note. Can be edited until confirmation."
     )
@@ -180,7 +267,7 @@ public class EncounterController {
 
     @Operation(
             summary = "Confirm final note",
-            description = "Confirms the final note with AI accuracy rating. Can only be done once. " +
+            description = "Confirms the final note with system-computed transcript discrepancy accuracy. Can only be done once. " +
                     "After confirmation, documentation becomes immutable."
     )
     @PostMapping("/{encounterId}/confirm-note")
@@ -189,14 +276,46 @@ public class EncounterController {
             @RequestBody ConfirmNoteRequest request
     ) {
         try {
+            log.info("Encounter confirm-note request encounterId={}", encounterId);
             Encounter encounter = encounterService.confirmNote(
                     encounterId,
                     request.finalNote(),
-                    request.accuracyRating(),
                     request.correctionComments()
             );
+            log.info("Encounter note confirmed encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
+            log.warn("Encounter confirm-note failed encounterId={} reason={}", encounterId, e.getMessage());
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    // ==================== CARE PLAN SUGGESTIONS ====================
+
+    @Operation(
+            summary = "Suggest labs/medications/treatment plan",
+            description = "Generates advisory clinical suggestions and interaction warnings. Physician must explicitly agree before completion."
+    )
+    @PostMapping("/{encounterId}/care-plan/suggest")
+    public ResponseEntity<?> suggestCarePlan(@PathVariable UUID encounterId) {
+        try {
+            var result = clinicalDecisionSupportService.suggestCarePlan(encounterId);
+            return ResponseEntity.ok(result);
+        } catch (ClinicalDecisionSupportService.CarePlanException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Agree with advisory care plan suggestions",
+            description = "Records physician agreement with generated advisory suggestions before encounter completion."
+    )
+    @PostMapping("/{encounterId}/care-plan/agree")
+    public ResponseEntity<?> agreeCarePlan(@PathVariable UUID encounterId) {
+        try {
+            var result = clinicalDecisionSupportService.agreeCarePlan(encounterId);
+            return ResponseEntity.ok(result);
+        } catch (ClinicalDecisionSupportService.CarePlanException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -210,6 +329,8 @@ public class EncounterController {
             @RequestBody DiagnosisRequest request
     ) {
         try {
+            log.info("Encounter add-diagnosis request encounterId={} diagnosisType={}",
+                    encounterId, request.type());
             Encounter encounter = encounterService.addDiagnosis(
                     encounterId,
                     request.icdCode(),
@@ -217,8 +338,11 @@ public class EncounterController {
                     request.isPrimary(),
                     request.type()
             );
+            log.info("Encounter diagnosis added encounterId={} patientId={} diagnosisCount={}",
+                    encounter.getId(), encounter.getPatientId(), encounter.getDiagnoses().size());
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
+            log.warn("Encounter add-diagnosis failed encounterId={} reason={}", encounterId, e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -231,6 +355,17 @@ public class EncounterController {
     ) {
         try {
             Encounter encounter = encounterService.removeDiagnosis(encounterId, diagnosisId);
+            return ResponseEntity.ok(EncounterResponse.from(encounter));
+        } catch (EncounterService.EncounterException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "Agree diagnosis set")
+    @PostMapping("/{encounterId}/diagnoses/agree")
+    public ResponseEntity<?> agreeDiagnoses(@PathVariable UUID encounterId) {
+        try {
+            Encounter encounter = encounterService.agreeDiagnoses(encounterId);
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
@@ -330,9 +465,12 @@ public class EncounterController {
     @PostMapping("/{encounterId}/complete")
     public ResponseEntity<?> completeEncounter(@PathVariable UUID encounterId) {
         try {
+            log.info("Encounter complete request encounterId={}", encounterId);
             Encounter encounter = encounterService.completeEncounter(encounterId);
+            log.info("Encounter completed encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
+            log.warn("Encounter complete failed encounterId={} reason={}", encounterId, e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -526,6 +664,20 @@ public class EncounterController {
     ) {
     }
 
+    @Schema(description = "Generate AI draft from stored transcript")
+    public record GenerateAiDraftRequest(
+            @Schema(description = "Persist generated draft into encounter") boolean persist,
+            @Schema(description = "Prompt version metadata for audit", example = "ambient-soap-v1") String promptVersion
+    ) {
+    }
+
+    @Schema(description = "Generate differential suggestions request")
+    public record GenerateDifferentialRequest(
+            @Schema(description = "Optional physical exam summary for differential context")
+            String physicalExam
+    ) {
+    }
+
     @Schema(description = "Physician note request")
     public record PhysicianNoteRequest(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String note
@@ -535,7 +687,6 @@ public class EncounterController {
     @Schema(description = "Confirm note request")
     public record ConfirmNoteRequest(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String finalNote,
-            @Schema(description = "Required if AI draft exists") Encounter.NoteAccuracyRating accuracyRating,
             String correctionComments
     ) {
     }
@@ -618,10 +769,20 @@ public class EncounterController {
             boolean hasPhysicianNote,
             boolean noteConfirmed,
             Encounter.NoteAccuracyRating aiAccuracyRating,
+            Integer transcriptAccuracyScore,
+            String transcriptDiscrepancySummary,
             int diagnosisCount,
             int medicationCount,
             String startedAt,
             String completedAt,
+            boolean carePlanAgreementRequired,
+            boolean carePlanAgreed,
+            String carePlanAgreedAt,
+            String carePlanAgreedBy,
+            boolean diagnosisAgreementRequired,
+            boolean diagnosisAgreed,
+            String diagnosisAgreedAt,
+            String diagnosisAgreedBy,
             boolean canModify,
             boolean canHaveAddendum
     ) {
@@ -642,10 +803,20 @@ public class EncounterController {
                     e.hasPhysicianNote(),
                     e.isNoteConfirmed(),
                     e.getAiAccuracyRating(),
+                    e.getTranscriptAccuracyScore(),
+                    e.getTranscriptDiscrepancySummary(),
                     e.getDiagnoses().size(),
                     e.getMedicationOrders().size(),
                     e.getStartedAt().toString(),
                     e.getCompletedAt() != null ? e.getCompletedAt().toString() : null,
+                    e.isCarePlanAgreementRequired(),
+                    e.isCarePlanAgreed(),
+                    e.getCarePlanAgreedAt() != null ? e.getCarePlanAgreedAt().toString() : null,
+                    e.getCarePlanAgreedBy(),
+                    e.isDiagnosisAgreementRequired(),
+                    e.isDiagnosisAgreed(),
+                    e.getDiagnosisAgreedAt() != null ? e.getDiagnosisAgreedAt().toString() : null,
+                    e.getDiagnosisAgreedBy(),
                     !e.isTerminal() && !e.isNoteConfirmed(),
                     e.canHaveAddendum()
             );
@@ -722,3 +893,5 @@ public class EncounterController {
     public record ErrorResponse(String error) {
     }
 }
+
+

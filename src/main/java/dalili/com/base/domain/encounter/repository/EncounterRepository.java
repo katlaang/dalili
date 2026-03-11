@@ -41,6 +41,15 @@ public interface EncounterRepository extends ImmutableClinicalRepository<Encount
     List<Encounter> findByClinicianIdAndStatus(UUID clinicianId, Encounter.EncounterStatus status);
 
     /**
+     * Finds completed encounters for a patient with a specific clinician.
+     */
+    List<Encounter> findByPatientIdAndClinicianIdAndStatusOrderByStartedAtDesc(
+            UUID patientId,
+            UUID clinicianId,
+            Encounter.EncounterStatus status
+    );
+
+    /**
      * Counts encounters with AI accuracy ratings within a date range.
      */
     long countByAiAccuracyRatingAndStartedAtBetween(
@@ -68,6 +77,16 @@ public interface EncounterRepository extends ImmutableClinicalRepository<Encount
     @Query("SELECT e FROM Encounter e WHERE e.patientId = :patientId " +
             "AND e.status = 'COMPLETED' ORDER BY e.completedAt DESC")
     List<Encounter> findCompletedByPatientId(UUID patientId);
+
+    /**
+     * Finds patient IDs in a queue slice who were previously managed by the clinician.
+     */
+    @Query("SELECT DISTINCT e.patientId FROM Encounter e WHERE e.clinicianId = :clinicianId " +
+            "AND e.status = 'COMPLETED' AND e.patientId IN :patientIds")
+    List<UUID> findDistinctCompletedPatientIdsByClinicianIn(
+            UUID clinicianId,
+            List<UUID> patientIds
+    );
 
     /**
      * Finds encounters with confirmed notes for AI metrics.

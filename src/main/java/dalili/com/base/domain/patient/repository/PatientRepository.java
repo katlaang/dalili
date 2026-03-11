@@ -5,6 +5,7 @@ import dalili.com.base.domain.patient.model.Patient;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,6 +17,13 @@ public interface PatientRepository extends JpaRepository<Patient, UUID> {
     Optional<Patient> findByNationalId(String nationalId);
 
     Optional<Patient> findByMrnAndActiveTrue(String mrn);
+
+    Optional<Patient> findFirstByGivenNameIgnoreCaseAndFamilyNameIgnoreCaseAndDateOfBirthAndSexAndActiveTrue(
+            String givenName,
+            String familyName,
+            LocalDate dateOfBirth,
+            Patient.Sex sex
+    );
 
     boolean existsByMrn(String mrn);
 

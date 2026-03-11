@@ -2,8 +2,12 @@ package dalili.com.base.interfaces.security;
 
 import dalili.com.base.ambient.session.SessionContext;
 import dalili.com.base.application.service.AuthService;
+import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.domain.user.model.User;
+import dalili.com.base.interfaces.security.jwt.JwtService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,12 +20,16 @@ import java.util.UUID;
 @RequestMapping("/api/auth")
 public class AuthController {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+
     private final AuthService authService;
     private final SessionContext sessionContext;
+    private final JwtService jwtService;
 
-    public AuthController(AuthService authService, SessionContext sessionContext) {
+    public AuthController(AuthService authService, SessionContext sessionContext, JwtService jwtService) {
         this.authService = authService;
         this.sessionContext = sessionContext;
+        this.jwtService = jwtService;
     }
 
     // ==================== LOGIN ====================
@@ -30,9 +38,12 @@ public class AuthController {
     public ResponseEntity<LoginResponse> loginStaff(@RequestBody LoginRequest request) {
         try {
             String token = authService.loginStaff(request.username(), request.password());
-            return ResponseEntity.ok(new LoginResponse(token, "Login successful"));
+            String role = jwtService.getRole(token).name();
+            log.info("Staff login success username={} role={}", request.username(), role);
+            return ResponseEntity.ok(new LoginResponse(token, "Login successful", role));
         } catch (AuthService.AuthenticationException e) {
-            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage()));
+            log.warn("Staff login failed username={} reason={}", request.username(), e.getMessage());
+            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage(), null));
         }
     }
 
@@ -40,9 +51,11 @@ public class AuthController {
     public ResponseEntity<LoginResponse> loginPatient(@RequestBody LoginRequest request) {
         try {
             String token = authService.loginPatient(request.username(), request.password());
-            return ResponseEntity.ok(new LoginResponse(token, "Login successful"));
+            log.info("Patient login success username={}", request.username());
+            return ResponseEntity.ok(new LoginResponse(token, "Login successful", Role.PATIENT.name()));
         } catch (AuthService.AuthenticationException e) {
-            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage()));
+            log.warn("Patient login failed username={} reason={}", request.username(), e.getMessage());
+            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage(), null));
         }
     }
 
@@ -54,9 +67,29 @@ public class AuthController {
                     request.mrn(),
                     request.dateOfBirth()
             );
-            return ResponseEntity.ok(new LoginResponse(token, "Check-in successful"));
+            log.info("Kiosk check-in success kioskDeviceId={}", request.kioskDeviceId());
+            return ResponseEntity.ok(new LoginResponse(token, "Check-in successful", Role.KIOSK.name()));
         } catch (AuthService.AuthenticationException e) {
-            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage()));
+            log.warn("Kiosk check-in failed kioskDeviceId={} reason={}", request.kioskDeviceId(), e.getMessage());
+            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage(), null));
+        }
+    }
+
+    @PostMapping("/kiosk/identify")
+    public ResponseEntity<LoginResponse> kioskIdentify(@RequestBody KioskIdentifyRequest request) {
+        try {
+            String token = authService.kioskIdentifyByName(
+                    request.kioskDeviceId(),
+                    request.givenName(),
+                    request.familyName(),
+                    request.dateOfBirth(),
+                    request.sex()
+            );
+            log.info("Kiosk identify success kioskDeviceId={}", request.kioskDeviceId());
+            return ResponseEntity.ok(new LoginResponse(token, "Check-in successful", Role.KIOSK.name()));
+        } catch (AuthService.AuthenticationException e) {
+            log.warn("Kiosk identify failed kioskDeviceId={} reason={}", request.kioskDeviceId(), e.getMessage());
+            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage(), null));
         }
     }
 
@@ -121,13 +154,22 @@ public class AuthController {
     record LoginRequest(String username, String password) {
     }
 
-    record LoginResponse(String token, String message) {
+    record LoginResponse(String token, String message, String role) {
     }
 
     record MessageResponse(String message) {
     }
 
     record KioskCheckInRequest(String kioskDeviceId, String mrn, String dateOfBirth) {
+    }
+
+    record KioskIdentifyRequest(
+            String kioskDeviceId,
+            String givenName,
+            String familyName,
+            String dateOfBirth,
+            Patient.Sex sex
+    ) {
     }
 
     record StaffRegisterRequest(String username, String password, String fullName, Role role) {

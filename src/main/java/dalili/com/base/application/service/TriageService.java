@@ -11,6 +11,8 @@ import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
 import dalili.com.base.repository.queue.QueueTicketRepository;
 import dalili.com.base.repository.triage.TriageAssessmentRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,6 +43,8 @@ import java.util.UUID;
  */
 @Service
 public class TriageService {
+
+    private static final Logger log = LoggerFactory.getLogger(TriageService.class);
 
     private final TriageAssessmentRepository triageRepository;
     private final QueueTicketRepository queueRepository;
@@ -79,6 +83,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment beginAssessment(UUID queueTicketId, String chiefComplaint) {
         auditGuard.assertSessionActive();
+        log.info("Beginning triage assessment queueTicketId={}", queueTicketId);
 
         QueueTicket ticket = queueRepository.findById(queueTicketId)
                 .orElseThrow(() -> new TriageException("Queue ticket not found"));
@@ -105,6 +110,8 @@ public class TriageService {
 
         auditService.record("TRIAGE_STARTED", patient.getId(),
                 String.format("Triage assessment started for ticket %s", ticket.getTicketNumber()));
+        log.info("Triage assessment created assessmentId={} patientId={} queueTicketId={}",
+                assessment.getId(), assessment.getPatientId(), queueTicketId);
 
         return assessment;
     }
@@ -112,6 +119,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment beginReassessment(UUID queueTicketId) {
         auditGuard.assertSessionActive();
+        log.info("Beginning triage reassessment queueTicketId={}", queueTicketId);
 
         TriageAssessment previous = triageRepository.findTopByQueueTicketIdOrderByAssessedAtDesc(queueTicketId)
                 .orElseThrow(() -> new TriageException("No previous assessment found"));
@@ -124,6 +132,8 @@ public class TriageService {
 
         auditService.record("TRIAGE_REASSESSMENT_STARTED", previous.getPatientId(),
                 "Reassessment started for waiting patient");
+        log.info("Triage reassessment created assessmentId={} patientId={} queueTicketId={}",
+                reassessment.getId(), reassessment.getPatientId(), queueTicketId);
 
         return reassessment;
     }
@@ -133,6 +143,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment recordVitals(UUID assessmentId, VitalsInput vitals) {
         auditGuard.assertSessionActive();
+        log.info("Recording triage vitals assessmentId={}", assessmentId);
 
         TriageAssessment assessment = triageRepository.findById(assessmentId)
                 .orElseThrow(() -> new TriageException("Assessment not found"));
@@ -183,6 +194,8 @@ public class TriageService {
 
         auditService.record("TRIAGE_VITALS_RECORDED", assessment.getPatientId(),
                 String.format("Vitals recorded. System suggests: %s", assessment.getSystemTriageLevel()));
+        log.info("Triage vitals recorded assessmentId={} patientId={} suggestedLevel={}",
+                assessment.getId(), assessment.getPatientId(), assessment.getSystemTriageLevel());
 
         return assessment;
     }
@@ -190,6 +203,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment recordRedFlags(UUID assessmentId, RedFlagsInput redFlags) {
         auditGuard.assertSessionActive();
+        log.info("Recording triage red flags assessmentId={}", assessmentId);
 
         TriageAssessment assessment = triageRepository.findById(assessmentId)
                 .orElseThrow(() -> new TriageException("Assessment not found"));
@@ -224,6 +238,8 @@ public class TriageService {
             auditService.record("TRIAGE_RED_FLAGS", assessment.getPatientId(),
                     "Red flags identified: " + triageCalculator.generateTriageSummary(assessment));
         }
+        log.info("Triage red flags recorded assessmentId={} patientId={} hasRedFlags={} suggestedLevel={}",
+                assessment.getId(), assessment.getPatientId(), assessment.hasRedFlags(), assessment.getSystemTriageLevel());
 
         return assessment;
     }
@@ -231,6 +247,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment recordClinicalObservations(UUID assessmentId, ClinicalObservationsInput observations) {
         auditGuard.assertSessionActive();
+        log.info("Recording clinical observations assessmentId={}", assessmentId);
 
         TriageAssessment assessment = triageRepository.findById(assessmentId)
                 .orElseThrow(() -> new TriageException("Assessment not found"));
@@ -255,6 +272,8 @@ public class TriageService {
 
         auditService.record("TRIAGE_OBSERVATIONS_RECORDED", assessment.getPatientId(),
                 "Clinical observations recorded");
+        log.info("Clinical observations recorded assessmentId={} patientId={}",
+                assessment.getId(), assessment.getPatientId());
 
         return assessment;
     }
@@ -264,6 +283,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment acceptSystemTriage(UUID assessmentId) {
         auditGuard.assertSessionActive();
+        log.info("Accepting system triage assessmentId={}", assessmentId);
 
         TriageAssessment assessment = triageRepository.findById(assessmentId)
                 .orElseThrow(() -> new TriageException("Assessment not found"));
@@ -275,6 +295,8 @@ public class TriageService {
 
         auditService.record("TRIAGE_ACCEPTED", assessment.getPatientId(),
                 String.format("System triage accepted: %s", assessment.getFinalTriageLevel()));
+        log.info("System triage accepted assessmentId={} patientId={} finalLevel={}",
+                assessment.getId(), assessment.getPatientId(), assessment.getFinalTriageLevel());
 
         return assessment;
     }
@@ -282,6 +304,7 @@ public class TriageService {
     @Transactional
     public TriageAssessment overrideTriage(UUID assessmentId, TriageLevel newLevel, String reason) {
         auditGuard.assertSessionActive();
+        log.info("Overriding triage assessmentId={} newLevel={}", assessmentId, newLevel);
 
         if (reason == null || reason.isBlank()) {
             throw new TriageException("Override reason is required");
@@ -301,6 +324,8 @@ public class TriageService {
         auditService.record("TRIAGE_OVERRIDDEN", assessment.getPatientId(),
                 String.format("Triage overridden: %s → %s. Reason: %s",
                         systemLevel, newLevel, reason));
+        log.info("Triage overridden assessmentId={} patientId={} systemLevel={} finalLevel={}",
+                assessment.getId(), assessment.getPatientId(), systemLevel, assessment.getFinalTriageLevel());
 
         return assessment;
     }
@@ -388,3 +413,4 @@ public class TriageService {
         }
     }
 }
+

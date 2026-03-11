@@ -1,7 +1,8 @@
 package dalili.com.base.application.service;
 
-
 import dalili.com.base.ambient.session.SessionContext;
+import dalili.com.base.domain.ai.ConnectivityMonitor;
+import dalili.com.base.domain.ai.NoteComparisonService;
 import dalili.com.base.domain.encounter.model.Diagnosis;
 import dalili.com.base.domain.encounter.model.Encounter;
 import dalili.com.base.domain.encounter.model.EncounterPreview;
@@ -15,15 +16,16 @@ import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
 import dalili.com.base.repository.queue.QueueTicketRepository;
 import dalili.com.base.repository.triage.TriageAssessmentRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.time.ZoneId;
+import java.util.*;
 
 /**
  * Service for managing clinical encounters.
@@ -52,6 +54,8 @@ import java.util.UUID;
 @Service
 public class EncounterService {
 
+    private static final Logger log = LoggerFactory.getLogger(EncounterService.class);
+
     private final EncounterRepository encounterRepository;
     private final MedicationOrderRepository medicationOrderRepository;
     private final QueueTicketRepository queueTicketRepository;
@@ -61,6 +65,9 @@ public class EncounterService {
     private final AuditService auditService;
     private final AuditGuard auditGuard;
     private final SessionContext sessionContext;
+    private final ConnectivityMonitor connectivityMonitor;
+    private final NoteComparisonService noteComparisonService;
+    private final String clinicName;
 
     public EncounterService(
             EncounterRepository encounterRepository,
@@ -71,7 +78,10 @@ public class EncounterService {
             QueueService queueService,
             AuditService auditService,
             AuditGuard auditGuard,
-            SessionContext sessionContext
+            SessionContext sessionContext,
+            ConnectivityMonitor connectivityMonitor,
+            NoteComparisonService noteComparisonService,
+            @Value("${dalili.clinic.name:Dalili Health Clinic}") String clinicName
     ) {
         this.encounterRepository = encounterRepository;
         this.medicationOrderRepository = medicationOrderRepository;
@@ -82,6 +92,9 @@ public class EncounterService {
         this.auditService = auditService;
         this.auditGuard = auditGuard;
         this.sessionContext = sessionContext;
+        this.connectivityMonitor = connectivityMonitor;
+        this.noteComparisonService = noteComparisonService;
+        this.clinicName = clinicName;
     }
 
     // ==================== PRE-ENCOUNTER PREVIEW ====================
@@ -139,8 +152,20 @@ public class EncounterService {
         // Build clinical alerts
         List<EncounterPreview.ClinicalAlert> alerts = buildClinicalAlerts(patient, ticket, triageSummary);
 
-        // Build recent encounters
-        List<EncounterPreview.PreviousEncounterSummary> recentEncounters = buildRecentEncounters(patient.getId());
+        // Build historical datasets for repeat-care context
+        List<Encounter> completedEncounters = encounterRepository.findCompletedByPatientId(patient.getId());
+        List<EncounterPreview.PreviousEncounterSummary> recentEncounters = buildRecentEncounters(completedEncounters);
+        EncounterPreview.RepeatCareSummary repeatCareSummary = buildRepeatCareSummary(
+                completedEncounters,
+                sessionContext.userId(),
+                sessionContext.username()
+        );
+        List<EncounterPreview.HistoricalDiagnosis> diagnosisHistory = buildDiagnosisHistory(
+                completedEncounters,
+                sessionContext.userId()
+        );
+        List<EncounterPreview.VitalTrendPoint> vitalTrends = buildVitalsTrend(patient.getId());
+        List<EncounterPreview.CarePlanHistory> carePlanHistory = buildCarePlanHistory(completedEncounters);
 
         // Audit the preview access
         auditService.record("ENCOUNTER_PREVIEW_ACCESSED", patient.getId(),
@@ -152,7 +177,11 @@ public class EncounterService {
                 triageSummary,
                 activeMedications,
                 alerts,
-                recentEncounters
+                recentEncounters,
+                repeatCareSummary,
+                diagnosisHistory,
+                vitalTrends,
+                carePlanHistory
         );
     }
 
@@ -388,13 +417,10 @@ public class EncounterService {
     /**
      * Builds recent encounter summaries.
      */
-    private List<EncounterPreview.PreviousEncounterSummary> buildRecentEncounters(UUID patientId) {
+    private List<EncounterPreview.PreviousEncounterSummary> buildRecentEncounters(List<Encounter> completedEncounters) {
         List<EncounterPreview.PreviousEncounterSummary> summaries = new ArrayList<>();
 
-        List<Encounter> recent = encounterRepository.findByPatientIdOrderByStartedAtDesc(patientId);
-
-        recent.stream()
-                .filter(e -> e.getStatus() == Encounter.EncounterStatus.COMPLETED)
+        completedEncounters.stream()
                 .limit(5)
                 .forEach(e -> {
                     String primaryDiagnosis = e.getDiagnoses().stream()
@@ -415,6 +441,100 @@ public class EncounterService {
         return summaries;
     }
 
+    private EncounterPreview.RepeatCareSummary buildRepeatCareSummary(
+            List<Encounter> completedEncounters,
+            UUID currentClinicianId,
+            String currentClinicianName
+    ) {
+        List<Encounter> clinicianEncounters = completedEncounters.stream()
+                .filter(encounter -> currentClinicianId != null && currentClinicianId.equals(encounter.getClinicianId()))
+                .toList();
+
+        LocalDate lastVisit = clinicianEncounters.stream()
+                .map(encounter -> encounter.getStartedAt().atZone(ZoneId.systemDefault()).toLocalDate())
+                .max(LocalDate::compareTo)
+                .orElse(null);
+
+        return new EncounterPreview.RepeatCareSummary(
+                !clinicianEncounters.isEmpty(),
+                currentClinicianId,
+                currentClinicianName,
+                clinicianEncounters.size(),
+                completedEncounters.size(),
+                lastVisit
+        );
+    }
+
+    private List<EncounterPreview.HistoricalDiagnosis> buildDiagnosisHistory(
+            List<Encounter> completedEncounters,
+            UUID currentClinicianId
+    ) {
+        List<EncounterPreview.HistoricalDiagnosis> history = new ArrayList<>();
+
+        completedEncounters.stream()
+                .limit(12)
+                .forEach(encounter -> {
+                    LocalDate encounterDate = encounter.getStartedAt()
+                            .atZone(ZoneId.systemDefault())
+                            .toLocalDate();
+
+                    encounter.getDiagnoses().stream()
+                            .limit(5)
+                            .forEach(diagnosis -> history.add(new EncounterPreview.HistoricalDiagnosis(
+                                    encounter.getId(),
+                                    encounterDate,
+                                    diagnosis.getIcdCode(),
+                                    diagnosis.getDescription(),
+                                    diagnosis.isPrimary(),
+                                    encounter.getClinicianName(),
+                                    currentClinicianId != null && currentClinicianId.equals(encounter.getClinicianId())
+                            )));
+                });
+
+        if (history.size() <= 30) {
+            return history;
+        }
+        return history.subList(0, 30);
+    }
+
+    private List<EncounterPreview.VitalTrendPoint> buildVitalsTrend(UUID patientId) {
+        return triageAssessmentRepository.findByPatientIdOrderByAssessedAtDesc(patientId)
+                .stream()
+                .filter(assessment -> assessment.getBloodPressureSystolic() != null
+                        || assessment.getBloodPressureDiastolic() != null
+                        || assessment.getHeartRateBpm() != null
+                        || assessment.getOxygenSaturation() != null
+                        || assessment.getTemperatureCelsius() != null
+                        || assessment.getPainScore() != null)
+                .limit(12)
+                .sorted(Comparator.comparing(TriageAssessment::getAssessedAt))
+                .map(assessment -> new EncounterPreview.VitalTrendPoint(
+                        assessment.getId(),
+                        assessment.getAssessedAt().atZone(ZoneId.systemDefault()).toLocalDate(),
+                        assessment.getBloodPressureSystolic(),
+                        assessment.getBloodPressureDiastolic(),
+                        assessment.getHeartRateBpm(),
+                        assessment.getOxygenSaturation(),
+                        assessment.getTemperatureCelsius(),
+                        assessment.getPainScore()
+                ))
+                .toList();
+    }
+
+    private List<EncounterPreview.CarePlanHistory> buildCarePlanHistory(List<Encounter> completedEncounters) {
+        return completedEncounters.stream()
+                .filter(encounter -> encounter.getCarePlanSuggestionSummary() != null
+                        && !encounter.getCarePlanSuggestionSummary().isBlank())
+                .limit(8)
+                .map(encounter -> new EncounterPreview.CarePlanHistory(
+                        encounter.getId(),
+                        encounter.getStartedAt().atZone(ZoneId.systemDefault()).toLocalDate(),
+                        encounter.getClinicianName(),
+                        encounter.getCarePlanSuggestionSummary()
+                ))
+                .toList();
+    }
+
     // ==================== ENCOUNTER CREATION ====================
 
     /**
@@ -423,6 +543,7 @@ public class EncounterService {
     @Transactional
     public Encounter createFromQueue(UUID queueTicketId, Encounter.EncounterType encounterType) {
         auditGuard.assertSessionActive();
+        log.info("Creating encounter from queue ticketId={} encounterType={}", queueTicketId, encounterType);
 
         QueueTicket ticket = queueTicketRepository.findById(queueTicketId)
                 .orElseThrow(() -> new EncounterException("Queue ticket not found"));
@@ -456,6 +577,8 @@ public class EncounterService {
 
         auditService.record("ENCOUNTER_CREATED", ticket.getPatientId(),
                 String.format("Encounter created from ticket %s", ticket.getTicketNumber()));
+        log.info("Encounter created from queue encounterId={} patientId={} queueTicketId={}",
+                encounter.getId(), encounter.getPatientId(), queueTicketId);
 
         return encounter;
     }
@@ -466,6 +589,7 @@ public class EncounterService {
     @Transactional
     public Encounter createStandalone(UUID patientId, Encounter.EncounterType encounterType, String chiefComplaint) {
         auditGuard.assertSessionActive();
+        log.info("Creating standalone encounter patientId={} encounterType={}", patientId, encounterType);
 
         Optional<Patient> patientOpt = Optional.ofNullable(patientService.findById(patientId));
         if (patientOpt.isEmpty()) {
@@ -489,6 +613,7 @@ public class EncounterService {
 
         auditService.record("ENCOUNTER_CREATED", patientId,
                 String.format("Standalone encounter created: %s", encounterType));
+        log.info("Standalone encounter created encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
@@ -501,6 +626,7 @@ public class EncounterService {
     @Transactional
     public Encounter recordTranscript(UUID encounterId, String transcript) {
         auditGuard.assertSessionActive();
+        log.info("Recording encounter transcript encounterId={}", encounterId);
 
         Encounter encounter = findByIdOrThrow(encounterId);
 
@@ -514,6 +640,7 @@ public class EncounterService {
 
         auditService.record("TRANSCRIPT_RECORDED", encounter.getPatientId(),
                 "Ambient AI transcript recorded");
+        log.info("Encounter transcript recorded encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
@@ -552,6 +679,7 @@ public class EncounterService {
     @Transactional
     public Encounter recordPhysicianNote(UUID encounterId, String note) {
         auditGuard.assertSessionActive();
+        log.info("Recording physician note encounterId={} author={}", encounterId, sessionContext.username());
 
         Encounter encounter = findByIdOrThrow(encounterId);
 
@@ -565,29 +693,49 @@ public class EncounterService {
 
         auditService.record("PHYSICIAN_NOTE_RECORDED", encounter.getPatientId(),
                 "Physician authored note recorded");
+        log.info("Physician note recorded encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
 
     /**
-     * Confirms note with AI comparison.
+     * Confirms note with AI comparison when available, otherwise uses manual/offline confirmation.
      */
     @Transactional
     public Encounter confirmNote(
             UUID encounterId,
             String finalNote,
-            Encounter.NoteAccuracyRating accuracyRating,
             String correctionComments
     ) {
         auditGuard.assertSessionActive();
+        log.info("Confirming encounter note encounterId={} confirmer={}", encounterId, sessionContext.username());
 
         Encounter encounter = findByIdOrThrow(encounterId);
         String staffId = sessionContext.username();
+        boolean aiAvailable = connectivityMonitor.isAiAvailable();
+        boolean canRunAiComparison = aiAvailable && encounter.hasTranscript();
+        TranscriptValidationResult validation;
 
         try {
-            if (encounter.hasAiDraft()) {
-                encounter.confirmNote(finalNote, accuracyRating, correctionComments, staffId);
+            if (canRunAiComparison) {
+                validation = validateAgainstTranscriptWithAi(encounter, finalNote);
+                encounter.confirmNoteWithSystemAssessment(
+                        finalNote,
+                        validation.rating(),
+                        validation.score(),
+                        validation.summary(),
+                        correctionComments,
+                        staffId
+                );
             } else {
+                String summary = aiAvailable
+                        ? "AI comparison skipped because transcript is not available for this encounter."
+                        : "AI comparison skipped because system is offline or AI is unavailable.";
+                validation = new TranscriptValidationResult(
+                        Encounter.NoteAccuracyRating.NOT_ASSESSED,
+                        null,
+                        summary
+                );
                 encounter.confirmNoteWithoutAi(finalNote, staffId);
             }
         } catch (IllegalStateException | IllegalArgumentException e) {
@@ -596,10 +744,13 @@ public class EncounterService {
 
         encounter = encounterRepository.save(encounter);
 
-        String ratingInfo = accuracyRating != null ?
-                String.format(" AI accuracy: %s", accuracyRating) : "";
+        String ratingInfo = String.format(" AI accuracy(system): %s (%s).",
+                validation.rating(),
+                validation.score() != null ? validation.score() + "%" : "n/a");
         auditService.record("NOTE_CONFIRMED", encounter.getPatientId(),
-                "Final note confirmed." + ratingInfo);
+                "Final note confirmed." + ratingInfo + " " + validation.summary());
+        log.info("Encounter note confirmed encounterId={} patientId={} aiComparisonPerformed={} score={}",
+                encounter.getId(), encounter.getPatientId(), canRunAiComparison, validation.score());
 
         return encounter;
     }
@@ -615,6 +766,8 @@ public class EncounterService {
             Diagnosis.DiagnosisType type
     ) {
         auditGuard.assertSessionActive();
+        log.info("Adding encounter diagnosis encounterId={} diagnosisType={} isPrimary={}",
+                encounterId, type, isPrimary);
 
         Encounter encounter = findByIdOrThrow(encounterId);
 
@@ -630,6 +783,8 @@ public class EncounterService {
 
         auditService.record("DIAGNOSIS_ADDED", encounter.getPatientId(),
                 String.format("Diagnosis added: %s - %s", icdCode, description));
+        log.info("Encounter diagnosis added encounterId={} patientId={} diagnosisCount={}",
+                encounter.getId(), encounter.getPatientId(), encounter.getDiagnoses().size());
 
         return encounter;
     }
@@ -659,11 +814,33 @@ public class EncounterService {
         return encounter;
     }
 
+    @Transactional
+    public Encounter agreeDiagnoses(UUID encounterId) {
+        auditGuard.assertSessionActive();
+
+        Encounter encounter = findByIdOrThrow(encounterId);
+        String staffId = sessionContext.username();
+
+        try {
+            encounter.agreeDiagnoses(staffId);
+        } catch (IllegalStateException e) {
+            throw new EncounterException(e.getMessage());
+        }
+
+        encounter = encounterRepository.save(encounter);
+
+        auditService.record("DIAGNOSIS_AGREED", encounter.getPatientId(),
+                "Physician agreed diagnosis set");
+
+        return encounter;
+    }
+
     // ==================== MEDICATION ORDERS ====================
 
     @Transactional
     public Encounter addMedicationOrder(UUID encounterId, MedicationOrderInput input) {
         auditGuard.assertSessionActive();
+        log.info("Adding medication order encounterId={} orderedBy={}", encounterId, sessionContext.username());
 
         Encounter encounter = findByIdOrThrow(encounterId);
         String staffId = sessionContext.username();
@@ -696,6 +873,8 @@ public class EncounterService {
 
         auditService.record("MEDICATION_ORDERED", encounter.getPatientId(),
                 String.format("Medication ordered: %s %s", input.medicationName(), input.dosage()));
+        log.info("Medication order added encounterId={} patientId={} medicationOrderCount={}",
+                encounter.getId(), encounter.getPatientId(), encounter.getMedicationOrders().size());
 
         return encounter;
     }
@@ -746,13 +925,15 @@ public class EncounterService {
 
         StringBuilder prescriptionText = new StringBuilder();
         prescriptionText.append("=".repeat(50)).append("\n");
-        prescriptionText.append("DALILI HEALTH - PRESCRIPTION\n");
+        prescriptionText.append(clinicName.toUpperCase()).append(" - PRESCRIPTION\n");
         prescriptionText.append("=".repeat(50)).append("\n\n");
 
         prescriptionText.append("Patient: ").append(patient.getFullName()).append("\n");
         prescriptionText.append("MRN: ").append(patient.getMrn()).append("\n");
         prescriptionText.append("DOB: ").append(patient.getDateOfBirth()).append("\n");
-        prescriptionText.append("Date: ").append(LocalDate.now()).append("\n\n");
+        prescriptionText.append("Date: ").append(LocalDate.now()).append("\n");
+        prescriptionText.append("Doctor: ").append(encounter.getClinicianName()).append("\n");
+        prescriptionText.append("Role: ").append(encounter.getClinicianRole()).append("\n\n");
 
         prescriptionText.append("-".repeat(50)).append("\n");
         prescriptionText.append("MEDICATIONS:\n");
@@ -767,6 +948,7 @@ public class EncounterService {
 
         prescriptionText.append("-".repeat(50)).append("\n");
         prescriptionText.append("Prescriber: ").append(encounter.getClinicianName()).append("\n");
+        prescriptionText.append("Ordered At: ").append(java.time.LocalDateTime.now(ZoneId.systemDefault())).append("\n");
         prescriptionText.append("Signature: _______________________\n");
         prescriptionText.append("=".repeat(50)).append("\n");
 
@@ -774,6 +956,9 @@ public class EncounterService {
                 encounter.getId(),
                 patient.getFullName(),
                 patient.getMrn(),
+                clinicName,
+                encounter.getClinicianName(),
+                LocalDate.now(),
                 prescriptionText.toString(),
                 orders.size()
         );
@@ -819,6 +1004,7 @@ public class EncounterService {
     @Transactional
     public Encounter completeEncounter(UUID encounterId) {
         auditGuard.assertSessionActive();
+        log.info("Completing encounter encounterId={} completedBy={}", encounterId, sessionContext.username());
 
         Encounter encounter = findByIdOrThrow(encounterId);
 
@@ -835,6 +1021,7 @@ public class EncounterService {
 
         auditService.record("ENCOUNTER_COMPLETED", encounter.getPatientId(),
                 "Encounter completed");
+        log.info("Encounter completed encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
@@ -842,6 +1029,7 @@ public class EncounterService {
     @Transactional
     public Encounter cancelEncounter(UUID encounterId, String reason) {
         auditGuard.assertSessionActive();
+        log.info("Cancelling encounter encounterId={} cancelledBy={}", encounterId, sessionContext.username());
 
         Encounter encounter = findByIdOrThrow(encounterId);
 
@@ -855,6 +1043,7 @@ public class EncounterService {
 
         auditService.record("ENCOUNTER_CANCELLED", encounter.getPatientId(),
                 String.format("Encounter cancelled: %s", reason));
+        log.info("Encounter cancelled encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
@@ -887,6 +1076,113 @@ public class EncounterService {
                 .orElseThrow(() -> new EncounterException("Encounter not found"));
     }
 
+    private TranscriptValidationResult validateAgainstTranscriptWithAi(Encounter encounter, String finalNote) {
+        NoteComparisonService.ComparisonResult aiResult = noteComparisonService.compare(
+                encounter.getTranscript(),
+                encounter.getAiDraftNote(),
+                finalNote
+        );
+
+        if (aiResult.available()) {
+            return new TranscriptValidationResult(
+                    mapComparisonRating(aiResult.rating()),
+                    aiResult.score(),
+                    aiResult.summary()
+            );
+        }
+
+        TranscriptValidationResult heuristicFallback = validateAgainstTranscript(encounter, finalNote);
+        String fallbackSummary = heuristicFallback.summary() + " AI comparison unavailable; local fallback used.";
+        if (aiResult.errorMessage() != null && !aiResult.errorMessage().isBlank()) {
+            fallbackSummary = fallbackSummary + " Reason: " + aiResult.errorMessage();
+        }
+        return new TranscriptValidationResult(
+                heuristicFallback.rating(),
+                heuristicFallback.score(),
+                fallbackSummary
+        );
+    }
+
+    private TranscriptValidationResult validateAgainstTranscript(Encounter encounter, String finalNote) {
+        if (encounter.getTranscript() == null || encounter.getTranscript().isBlank()) {
+            return new TranscriptValidationResult(
+                    Encounter.NoteAccuracyRating.NOT_ASSESSED,
+                    null,
+                    "No transcript available for discrepancy analysis."
+            );
+        }
+
+        Set<String> transcriptTokens = tokenizeClinicalTerms(encounter.getTranscript());
+        Set<String> noteTokens = tokenizeClinicalTerms(finalNote);
+
+        if (transcriptTokens.isEmpty()) {
+            return new TranscriptValidationResult(
+                    Encounter.NoteAccuracyRating.NOT_ASSESSED,
+                    null,
+                    "Transcript did not contain enough clinical terms for scoring."
+            );
+        }
+
+        Set<String> intersection = new HashSet<>(transcriptTokens);
+        intersection.retainAll(noteTokens);
+
+        int score = (int) Math.round((intersection.size() * 100.0) / transcriptTokens.size());
+        Encounter.NoteAccuracyRating rating = mapScoreToRating(score);
+
+        Set<String> missing = new HashSet<>(transcriptTokens);
+        missing.removeAll(noteTokens);
+        List<String> topMissing = missing.stream().limit(12).toList();
+
+        String summary = topMissing.isEmpty()
+                ? "No major transcript term discrepancies detected."
+                : "Potentially missing transcript terms in final note: " + String.join(", ", topMissing);
+
+        return new TranscriptValidationResult(rating, score, summary);
+    }
+
+    private Encounter.NoteAccuracyRating mapComparisonRating(NoteComparisonService.ComparisonRating rating) {
+        return switch (rating) {
+            case ACCURATE -> Encounter.NoteAccuracyRating.ACCURATE;
+            case MINOR_EDITS -> Encounter.NoteAccuracyRating.MINOR_EDITS;
+            case MAJOR_EDITS -> Encounter.NoteAccuracyRating.MAJOR_EDITS;
+            case UNSAFE -> Encounter.NoteAccuracyRating.UNSAFE;
+            case NOT_ASSESSED -> Encounter.NoteAccuracyRating.NOT_ASSESSED;
+        };
+    }
+
+    private Set<String> tokenizeClinicalTerms(String text) {
+        if (text == null || text.isBlank()) {
+            return Set.of();
+        }
+
+        Set<String> stopWords = Set.of(
+                "the", "and", "for", "with", "that", "this", "have", "from", "were", "been",
+                "patient", "reports", "report", "today", "history", "present", "past", "normal",
+                "note", "notes", "assessment", "plan", "review", "follow", "clinic", "hospital"
+        );
+
+        Set<String> tokens = new HashSet<>();
+        Arrays.stream(text.toLowerCase().split("[^a-z0-9]+"))
+                .map(String::trim)
+                .filter(token -> token.length() >= 3)
+                .filter(token -> !stopWords.contains(token))
+                .forEach(tokens::add);
+        return tokens;
+    }
+
+    private Encounter.NoteAccuracyRating mapScoreToRating(int score) {
+        if (score >= 80) {
+            return Encounter.NoteAccuracyRating.ACCURATE;
+        }
+        if (score >= 60) {
+            return Encounter.NoteAccuracyRating.MINOR_EDITS;
+        }
+        if (score >= 35) {
+            return Encounter.NoteAccuracyRating.MAJOR_EDITS;
+        }
+        return Encounter.NoteAccuracyRating.UNSAFE;
+    }
+
     // ==================== RECORDS ====================
 
     public record MedicationOrderInput(
@@ -907,8 +1203,18 @@ public class EncounterService {
             UUID encounterId,
             String patientName,
             String mrn,
+            String clinicName,
+            String orderedBy,
+            LocalDate orderDate,
             String prescriptionText,
             int medicationCount
+    ) {
+    }
+
+    public record TranscriptValidationResult(
+            Encounter.NoteAccuracyRating rating,
+            Integer score,
+            String summary
     ) {
     }
 
@@ -927,3 +1233,5 @@ public class EncounterService {
         }
     }
 }
+
+

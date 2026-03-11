@@ -5,6 +5,8 @@ import dalili.com.base.domain.session.ActiveSessionRepository;
 import dalili.com.base.domain.session.model.KioskSession;
 import dalili.com.base.domain.session.repository.KioskSessionRepository;
 import dalili.com.base.domain.user.model.ActorType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,6 +16,8 @@ import java.util.UUID;
 
 @Service
 public class SessionActivityService {
+
+    private static final Logger log = LoggerFactory.getLogger(SessionActivityService.class);
 
     private final ActiveSessionRepository activeSessionRepository;
     private final KioskSessionRepository kioskSessionRepository;
@@ -37,6 +41,7 @@ public class SessionActivityService {
      */
     @Transactional
     public void touch(UUID sessionId, UUID userId, ActorType actorType) {
+        log.debug("Touching session sessionId={} userId={} actorType={}", sessionId, userId, actorType);
         ActiveSession session = activeSessionRepository.findById(sessionId)
                 .orElse(null);
 
@@ -53,13 +58,15 @@ public class SessionActivityService {
      * Check if session is still active (not timed out due to inactivity).
      */
     public boolean isSessionActive(UUID sessionId, ActorType actorType) {
-        return activeSessionRepository.findById(sessionId)
+        boolean active = activeSessionRepository.findById(sessionId)
                 .map(session -> {
                     long inactivityLimit = getInactivityLimit(actorType);
                     Instant cutoff = Instant.now().minusSeconds(inactivityLimit);
                     return session.getLastActivity().isAfter(cutoff);
                 })
                 .orElse(false);
+        log.debug("Session active check sessionId={} actorType={} active={}", sessionId, actorType, active);
+        return active;
     }
 
     /**
@@ -82,15 +89,18 @@ public class SessionActivityService {
     public void createKioskSession(UUID sessionId, UUID kioskUserId, UUID patientId) {
         KioskSession session = new KioskSession(sessionId, kioskUserId, patientId);
         kioskSessionRepository.save(session);
+        log.info("Kiosk session created sessionId={} kioskUserId={} patientId={}", sessionId, kioskUserId, patientId);
     }
 
     /**
      * Check if kiosk session has already been used.
      */
     public boolean isKioskSessionUsed(UUID sessionId) {
-        return kioskSessionRepository.findById(sessionId)
+        boolean used = kioskSessionRepository.findById(sessionId)
                 .map(KioskSession::isUsed)
                 .orElse(true); // If not found, treat as used (invalid)
+        log.debug("Kiosk session usage check sessionId={} used={}", sessionId, used);
+        return used;
     }
 
     /**
@@ -102,6 +112,7 @@ public class SessionActivityService {
                 .ifPresent(session -> {
                     session.markUsed();
                     kioskSessionRepository.save(session);
+                    log.info("Kiosk session marked used sessionId={} patientId={}", sessionId, session.getPatientId());
                 });
     }
 
@@ -111,5 +122,8 @@ public class SessionActivityService {
     @Transactional
     public void invalidateSession(UUID sessionId) {
         activeSessionRepository.deleteById(sessionId);
+        log.info("Session invalidated sessionId={}", sessionId);
     }
 }
+
+

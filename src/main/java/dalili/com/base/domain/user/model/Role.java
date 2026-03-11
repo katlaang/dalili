@@ -8,6 +8,7 @@ public enum Role {
     LAB_TECHNICIAN,
 
     // Administrative
+    SUPER_ADMIN,
     ADMIN,
     RECEPTIONIST,
 

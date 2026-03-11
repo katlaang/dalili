@@ -95,6 +95,29 @@ public class SoapExtractionService {
         }
     }
 
+    /**
+     * Extracts a formatted SOAP draft suitable for clinician review screens.
+     */
+    public DraftResult extractDraft(String transcript) {
+        SoapExtractionResult result = extract(transcript);
+        if (!result.available() || result.soapNote() == null) {
+            return DraftResult.unavailable(result.errorMessage());
+        }
+
+        return new DraftResult(
+                true,
+                result.soapNote().toFormattedString(),
+                result.extractedSymptoms(),
+                result.flaggedItems(),
+                result.confidence(),
+                result.provider(),
+                result.model(),
+                result.latencyMs(),
+                result.generatedAt(),
+                null
+        );
+    }
+
     private SoapExtractionResult parseResponse(LlmResponse response) {
         try {
             String content = response.content().trim();
@@ -150,6 +173,34 @@ public class SoapExtractionService {
                 node.path("rr").asText(null),
                 node.path("spo2").asText(null)
         );
+    }
+
+    public record DraftResult(
+            boolean available,
+            String draftNote,
+            java.util.List<String> extractedSymptoms,
+            java.util.List<String> flaggedItems,
+            String confidence,
+            String provider,
+            String model,
+            long latencyMs,
+            Instant generatedAt,
+            String errorMessage
+    ) {
+        public static DraftResult unavailable(String message) {
+            return new DraftResult(
+                    false,
+                    null,
+                    java.util.List.of(),
+                    java.util.List.of(),
+                    null,
+                    null,
+                    null,
+                    0L,
+                    Instant.now(),
+                    message
+            );
+        }
     }
 }
 

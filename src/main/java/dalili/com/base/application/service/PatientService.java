@@ -1,10 +1,11 @@
 package dalili.com.base.application.service;
 
-
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.patient.repository.PatientRepository;
 import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,6 +14,8 @@ import java.util.UUID;
 
 @Service
 public class PatientService {
+
+    private static final Logger log = LoggerFactory.getLogger(PatientService.class);
 
     private final PatientRepository patientRepository;
     private final AuditService auditService;
@@ -37,12 +40,14 @@ public class PatientService {
     @Transactional
     public Patient openPatientFile(UUID patientId) {
         auditGuard.assertSessionActive();
+        log.info("Opening patient file by id patientId={}", patientId);
 
         Patient patient = findByIdInternal(patientId);
         patient.recordAccess();
         patientRepository.save(patient);
 
         auditService.record("PATIENT_FILE_OPENED", patientId, "Patient record accessed");
+        log.info("Patient file opened patientId={}", patientId);
 
         return patient;
     }
@@ -54,12 +59,14 @@ public class PatientService {
     @Transactional
     public Patient openPatientFileByMrn(String mrn) {
         auditGuard.assertSessionActive();
+        log.info("Opening patient file by MRN");
 
         Patient patient = findByMrnInternal(mrn);
         patient.recordAccess();
         patientRepository.save(patient);
 
         auditService.record("PATIENT_FILE_OPENED", patient.getId(), "Patient record accessed by MRN: " + mrn);
+        log.info("Patient file opened by MRN patientId={}", patient.getId());
 
         return patient;
     }
@@ -71,12 +78,14 @@ public class PatientService {
     @Transactional
     public Patient openPatientFileByNationalId(String nationalId) {
         auditGuard.assertSessionActive();
+        log.info("Opening patient file by national ID");
 
         Patient patient = findByNationalIdInternal(nationalId);
         patient.recordAccess();
         patientRepository.save(patient);
 
         auditService.record("PATIENT_FILE_OPENED", patient.getId(), "Patient record accessed by National ID");
+        log.info("Patient file opened by national ID patientId={}", patient.getId());
 
         return patient;
     }
@@ -92,6 +101,7 @@ public class PatientService {
             Patient.Sex sex
     ) {
         auditGuard.assertSessionActive();
+        log.info("Registering patient (minimal profile)");
 
         if (patientRepository.existsByMrn(mrn)) {
             throw new PatientException("MRN already exists: " + mrn);
@@ -101,6 +111,7 @@ public class PatientService {
         patient = patientRepository.save(patient);
 
         auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + mrn);
+        log.info("Patient registered patientId={}", patient.getId());
 
         return patient;
     }
@@ -121,6 +132,7 @@ public class PatientService {
             String emergencyContactPhone
     ) {
         auditGuard.assertSessionActive();
+        log.info("Registering patient (full profile)");
 
         if (patientRepository.existsByMrn(mrn)) {
             throw new PatientException("MRN already exists: " + mrn);
@@ -141,6 +153,7 @@ public class PatientService {
         patient = patientRepository.save(patient);
 
         auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + mrn);
+        log.info("Patient registered with full profile patientId={}", patient.getId());
 
         return patient;
     }
@@ -159,14 +172,59 @@ public class PatientService {
      * No audit - audit happens at check-in completion
      */
     public Patient verifyForKioskCheckIn(String mrn, LocalDate dateOfBirth) {
+        log.info("Verifying kiosk check-in by MRN");
         Patient patient = patientRepository.findByMrnAndActiveTrue(mrn)
                 .orElseThrow(() -> new PatientException("Patient not found"));
 
         if (!patient.getDateOfBirth().equals(dateOfBirth)) {
+            log.warn("Kiosk check-in verification failed for patientId={}", patient.getId());
             throw new PatientException("Verification failed");
         }
 
+        log.info("Kiosk check-in verification succeeded patientId={}", patient.getId());
         return patient;
+    }
+
+    /**
+     * Resolves an existing patient by demographics or creates a new record for kiosk flow.
+     */
+    @Transactional
+    public Patient resolveOrRegisterForKioskCheckIn(
+            String givenName,
+            String familyName,
+            LocalDate dateOfBirth,
+            Patient.Sex sex
+    ) {
+        log.info("Resolving kiosk patient by demographics");
+        String normalizedGivenName = normalizeName(givenName, "Given name is required");
+        String normalizedFamilyName = normalizeName(familyName, "Family name is required");
+        Patient.Sex resolvedSex = sex != null ? sex : Patient.Sex.UNKNOWN;
+
+        return patientRepository
+                .findFirstByGivenNameIgnoreCaseAndFamilyNameIgnoreCaseAndDateOfBirthAndSexAndActiveTrue(
+                        normalizedGivenName,
+                        normalizedFamilyName,
+                        dateOfBirth,
+                        resolvedSex
+                )
+                .orElseGet(() -> {
+                    String generatedMrn = generateKioskMrn();
+                    Patient created = Patient.register(
+                            generatedMrn,
+                            normalizedGivenName,
+                            normalizedFamilyName,
+                            dateOfBirth,
+                            resolvedSex
+                    );
+                    Patient saved = patientRepository.save(created);
+                    auditService.record(
+                            "PATIENT_REGISTERED_KIOSK",
+                            saved.getId(),
+                            "Kiosk self-check-in patient registration: " + saved.getMrn()
+                    );
+                    log.info("Kiosk patient auto-registered patientId={}", saved.getId());
+                    return saved;
+                });
     }
 
     private Patient findByIdInternal(UUID patientId) {
@@ -184,11 +242,27 @@ public class PatientService {
                 .orElseThrow(() -> new PatientException("Patient not found"));
     }
 
+    private String normalizeName(String value, String errorMessage) {
+        if (value == null || value.isBlank()) {
+            throw new PatientException(errorMessage);
+        }
+        return value.trim();
+    }
+
+    private String generateKioskMrn() {
+        String generated;
+        do {
+            generated = "KIO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        } while (patientRepository.existsByMrn(generated));
+        return generated;
+    }
+
     // ==================== UPDATES ====================
 
     @Transactional
     public Patient updateContactInfo(UUID patientId, String phone, String email, String address) {
         auditGuard.assertSessionActive();
+        log.info("Updating patient contact info patientId={}", patientId);
 
         Patient patient = findByIdInternal(patientId);
         patient.setPhoneNumber(phone);
@@ -197,24 +271,30 @@ public class PatientService {
 
         auditService.record("PATIENT_UPDATED", patientId, "Contact info updated");
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("Patient contact info updated patientId={}", saved.getId());
+        return saved;
     }
 
     @Transactional
     public Patient updateEmergencyContact(UUID patientId, String name, String phone) {
         auditGuard.assertSessionActive();
+        log.info("Updating emergency contact patientId={}", patientId);
 
         Patient patient = findByIdInternal(patientId);
         patient.setEmergencyContact(name, phone);
 
         auditService.record("PATIENT_UPDATED", patientId, "Emergency contact updated");
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("Emergency contact updated patientId={}", saved.getId());
+        return saved;
     }
 
     @Transactional
     public Patient updateNationalId(UUID patientId, String nationalId) {
         auditGuard.assertSessionActive();
+        log.info("Updating national ID patientId={}", patientId);
 
         if (patientRepository.existsByNationalId(nationalId)) {
             throw new PatientException("National ID already exists");
@@ -225,7 +305,9 @@ public class PatientService {
 
         auditService.record("PATIENT_UPDATED", patientId, "National ID updated");
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("National ID updated patientId={}", saved.getId());
+        return saved;
     }
 
     // ==================== CONSENT ====================
@@ -233,13 +315,16 @@ public class PatientService {
     @Transactional
     public Patient recordConsent(UUID patientId) {
         auditGuard.assertSessionActive();
+        log.info("Recording patient consent patientId={}", patientId);
 
         Patient patient = findByIdInternal(patientId);
         patient.recordConsent();
 
         auditService.record("PATIENT_CONSENT_RECORDED", patientId, "Patient gave consent");
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("Patient consent recorded patientId={}", saved.getId());
+        return saved;
     }
 
     // ==================== DEACTIVATION ====================
@@ -247,13 +332,16 @@ public class PatientService {
     @Transactional
     public Patient deactivate(UUID patientId) {
         auditGuard.assertSessionActive();
+        log.info("Deactivating patient record patientId={}", patientId);
 
         Patient patient = findByIdInternal(patientId);
         patient.deactivate();
 
         auditService.record("PATIENT_DEACTIVATED", patientId, "Patient record deactivated");
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("Patient record deactivated patientId={}", saved.getId());
+        return saved;
     }
 
     // ==================== EXCEPTION ====================
@@ -264,3 +352,5 @@ public class PatientService {
         }
     }
 }
+
+

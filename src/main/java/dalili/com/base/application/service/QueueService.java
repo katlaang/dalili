@@ -2,20 +2,23 @@ package dalili.com.base.application.service;
 
 
 import dalili.com.base.ambient.session.SessionContext;
+import dalili.com.base.domain.encounter.repository.EncounterRepository;
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.queue.PriorityModifier;
 import dalili.com.base.domain.queue.QueueTicket;
 import dalili.com.base.domain.triage.TriageLevel;
+import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
 import dalili.com.base.repository.queue.QueueTicketRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Service for managing the patient queue system.
@@ -52,8 +55,13 @@ import java.util.UUID;
 @Service
 public class QueueService {
 
+    private static final Logger log = LoggerFactory.getLogger(QueueService.class);
+
     private final QueueTicketRepository queueRepository;
+    private final EncounterRepository encounterRepository;
     private final PatientService patientService;
+    private final PatientDataAccessService patientDataAccessService;
+    private final FacilityWorkflowConfigService facilityWorkflowConfigService;
     private final AuditService auditService;
     private final AuditGuard auditGuard;
     private final SessionContext sessionContext;
@@ -69,13 +77,19 @@ public class QueueService {
      */
     public QueueService(
             QueueTicketRepository queueRepository,
+            EncounterRepository encounterRepository,
             PatientService patientService,
+            PatientDataAccessService patientDataAccessService,
+            FacilityWorkflowConfigService facilityWorkflowConfigService,
             AuditService auditService,
             AuditGuard auditGuard,
             SessionContext sessionContext
     ) {
         this.queueRepository = queueRepository;
+        this.encounterRepository = encounterRepository;
         this.patientService = patientService;
+        this.patientDataAccessService = patientDataAccessService;
+        this.facilityWorkflowConfigService = facilityWorkflowConfigService;
         this.auditService = auditService;
         this.auditGuard = auditGuard;
         this.sessionContext = sessionContext;
@@ -112,7 +126,19 @@ public class QueueService {
             QueueTicket.QueueCategory category,
             String initialComplaint
     ) {
+        if (category == QueueTicket.QueueCategory.EMERGENCY) {
+            facilityWorkflowConfigService.assertEmergencyFlowEnabled();
+        }
+        if (category == QueueTicket.QueueCategory.FOLLOW_UP) {
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+        }
+
         LocalDate today = LocalDate.now();
+        String sanitizedComplaint = initialComplaint;
+        if (sessionContext.role() == Role.RECEPTIONIST) {
+            sanitizedComplaint = null;
+            log.info("Queue complaint stripped for privacy patientId={} role={}", patientId, sessionContext.role());
+        }
 
         // Check for existing active ticket
         var activeStatuses = List.of(QueueTicket.QueueStatus.WAITING, QueueTicket.QueueStatus.CALLED, QueueTicket.QueueStatus.IN_PROGRESS);
@@ -146,7 +172,7 @@ public class QueueService {
                 ticketNumber,
                 category,
                 modifier,
-                initialComplaint,
+                sanitizedComplaint,
                 issuedBy
         );
 
@@ -173,6 +199,7 @@ public class QueueService {
     @Transactional
     public QueueTicket issueEmergencyTicket(UUID patientId, String initialComplaint) {
         auditGuard.assertSessionActive();
+        facilityWorkflowConfigService.assertEmergencyFlowEnabled();
 
         LocalDate today = LocalDate.now();
         String ticketNumber = generateTicketNumber(today, QueueTicket.QueueCategory.EMERGENCY);
@@ -186,6 +213,7 @@ public class QueueService {
         );
 
         ticket = queueRepository.save(ticket);
+        log.info("Emergency queue ticket issued ticketId={} patientId={}", ticket.getId(), patientId);
 
         auditService.record("QUEUE_EMERGENCY_TICKET", patientId,
                 String.format("EMERGENCY ticket %s issued. Complaint: %s",
@@ -285,6 +313,7 @@ public class QueueService {
      * @return list of triaged tickets in priority order
      */
     public List<QueueTicket> getConsultationQueue() {
+        refreshAppointmentPriorityBoosts();
         return queueRepository.findByQueueDateAndStatusAndTriagedOrderByEffectivePriorityAscCreatedAtAsc(
                 LocalDate.now(), QueueTicket.QueueStatus.WAITING, true
         );
@@ -298,6 +327,7 @@ public class QueueService {
      * @return list of waiting tickets in priority order
      */
     public List<QueueTicket> getWaitingQueue() {
+        refreshAppointmentPriorityBoosts();
         return queueRepository.findByQueueDateAndStatusOrderByEffectivePriorityAscCreatedAtAsc(
                 LocalDate.now(), QueueTicket.QueueStatus.WAITING
         );
@@ -310,6 +340,7 @@ public class QueueService {
      * @return list of waiting tickets for the category
      */
     public List<QueueTicket> getWaitingQueueByCategory(QueueTicket.QueueCategory category) {
+        refreshAppointmentPriorityBoosts();
         return queueRepository.findByQueueDateAndCategoryOrderByEffectivePriorityAscCreatedAtAsc(
                 LocalDate.now(), category
         );
@@ -321,6 +352,7 @@ public class QueueService {
      * @return list of all today's tickets
      */
     public List<QueueTicket> getTodayQueue() {
+        refreshAppointmentPriorityBoosts();
         return queueRepository.findByQueueDateOrderByCreatedAtAsc(LocalDate.now());
     }
 
@@ -387,7 +419,42 @@ public class QueueService {
             throw new QueueException("No triaged patients waiting for consultation");
         }
 
-        return callPatientInternal(consultQueue.get(0), counterNumber, "CONSULTATION");
+        UUID clinicianUserId = sessionContext.userId();
+        String clinicianEmployeeId = sessionContext.username();
+        String clinicianName = sessionContext.username();
+
+        QueueTicket selected = selectAssignedTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
+                .orElseGet(() -> selectRepeatPatientTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
+                        .orElseGet(() -> consultQueue.stream()
+                                .filter(ticket -> !isAssignedToAnotherClinician(ticket, clinicianUserId, clinicianEmployeeId))
+                                .findFirst()
+                                .orElse(consultQueue.get(0))));
+
+        boolean autoAssignRepeat = !selected.isAssignedToClinician(clinicianUserId, clinicianEmployeeId)
+                && !isAssignedToAnotherClinician(selected, clinicianUserId, clinicianEmployeeId)
+                && clinicianUserId != null
+                && clinicianEmployeeId != null
+                && clinicianName != null
+                && hasCompletedEncounterWithClinician(selected.getPatientId(), clinicianUserId);
+
+        if (autoAssignRepeat) {
+            selected.assignClinician(
+                    clinicianName,
+                    clinicianEmployeeId,
+                    clinicianUserId,
+                    clinicianEmployeeId,
+                    clinicianName,
+                    "AUTO_REPEAT_MATCH",
+                    "Auto-assigned to repeat clinician match"
+            );
+            selected = queueRepository.save(selected);
+
+            auditService.record("QUEUE_AUTO_REPEAT_ASSIGNMENT", selected.getPatientId(),
+                    String.format("Ticket %s auto-assigned to repeat clinician %s (%s)",
+                            selected.getTicketNumber(), clinicianName, clinicianEmployeeId));
+        }
+
+        return callPatientInternal(selected, counterNumber, "CONSULTATION");
     }
 
     /**
@@ -529,20 +596,23 @@ public class QueueService {
         QueueTicket ticket = queueRepository.findById(ticketId)
                 .orElseThrow(() -> new QueueException("Ticket not found"));
 
-        if (ticket.getStatus() != QueueTicket.QueueStatus.IN_PROGRESS) {
-            throw new QueueException("Session must be in progress");
+        if (ticket.getStatus() != QueueTicket.QueueStatus.IN_PROGRESS
+                && ticket.getStatus() != QueueTicket.QueueStatus.CALLED) {
+            throw new QueueException("Ticket must be CALLED or IN_PROGRESS");
         }
 
         if (!ticket.isTriaged()) {
             throw new QueueException("Patient must be triaged before returning to queue");
         }
 
-        // Reset status to waiting (keeping all triage info)
-        // This is a special transition - we use a direct field update
-        // Create a new method in QueueTicket for this transition
-
-        // For now, we'll complete and re-issue conceptually, but actually
-        // we should add a returnToQueue method to QueueTicket
+        ticket.returnToWaitingAfterTriage();
+        ticket = queueRepository.save(ticket);
+        log.info(
+                "Queue ticket returned to waiting ticketId={} patientId={} status={}",
+                ticket.getId(),
+                ticket.getPatientId(),
+                ticket.getStatus()
+        );
 
         auditService.record("QUEUE_RETURNED_TO_WAITING", ticket.getPatientId(),
                 String.format("Patient returned to consultation queue after triage: %s",
@@ -571,6 +641,92 @@ public class QueueService {
         auditService.record("QUEUE_NO_SHOW", ticket.getPatientId(),
                 String.format("No-show after %d calls: %s",
                         ticket.getMissedCallCount(), ticket.getTicketNumber()));
+
+        return ticket;
+    }
+
+    /**
+     * Captures triage nurse handoff to a specific clinician for consultation.
+     *
+     * @param ticketId the queue ticket UUID
+     * @param input    clinician handoff details
+     * @return updated ticket with clinician assignment metadata
+     */
+    @Transactional
+    public QueueTicket handoffToClinician(UUID ticketId, ClinicianHandoffInput input) {
+        auditGuard.assertSessionActive();
+
+        if (input == null) {
+            throw new QueueException("Clinician handoff details are required");
+        }
+
+        QueueTicket ticket = queueRepository.findById(ticketId)
+                .orElseThrow(() -> new QueueException("Ticket not found"));
+
+        if (!ticket.isTriaged()) {
+            throw new QueueException("Patient must be triaged before clinician handoff");
+        }
+        if (ticket.getStatus() == QueueTicket.QueueStatus.COMPLETED
+                || ticket.getStatus() == QueueTicket.QueueStatus.CANCELLED
+                || ticket.getStatus() == QueueTicket.QueueStatus.NO_SHOW
+                || ticket.getStatus() == QueueTicket.QueueStatus.ADMITTED) {
+            throw new QueueException("Cannot handoff clinician for closed ticket status: " + ticket.getStatus());
+        }
+
+        String assignedByStaffId = sessionContext.username();
+        String assignedByStaffName = sessionContext.username();
+
+        ticket.assignClinician(
+                input.clinicianName(),
+                input.clinicianEmployeeId(),
+                input.clinicianUserId(),
+                assignedByStaffId,
+                assignedByStaffName,
+                "NURSE_HANDOFF",
+                input.handoffNotes()
+        );
+
+        ticket = queueRepository.save(ticket);
+        log.info("Queue handoff recorded ticketId={} patientId={} clinicianEmployeeId={}",
+                ticket.getId(), ticket.getPatientId(), ticket.getAssignedClinicianEmployeeId());
+
+        auditService.record("QUEUE_CLINICIAN_HANDOFF", ticket.getPatientId(),
+                String.format("Ticket %s assigned to clinician %s (%s) by %s",
+                        ticket.getTicketNumber(),
+                        ticket.getAssignedClinicianName(),
+                        ticket.getAssignedClinicianEmployeeId(),
+                        assignedByStaffId));
+
+        return ticket;
+    }
+
+    /**
+     * Marks a patient as admitted from queue workflow.
+     *
+     * @param ticketId the ticket to mark admitted
+     * @param reason   optional admission reason
+     * @return the updated ticket in ADMITTED status
+     */
+    @Transactional
+    public QueueTicket admitPatient(UUID ticketId, String reason) {
+        auditGuard.assertSessionActive();
+
+        QueueTicket ticket = queueRepository.findById(ticketId)
+                .orElseThrow(() -> new QueueException("Ticket not found"));
+
+        if (ticket.getStatus() != QueueTicket.QueueStatus.IN_PROGRESS
+                && ticket.getStatus() != QueueTicket.QueueStatus.CALLED) {
+            throw new QueueException("Patient must be CALLED or IN_PROGRESS to admit");
+        }
+
+        String staffId = sessionContext.username();
+        ticket.markAdmitted(staffId, reason);
+        ticket = queueRepository.save(ticket);
+        patientDataAccessService.recordAdmissionGrant(ticket.getPatientId(), ticket.getId());
+        log.info("Queue admission recorded ticketId={} patientId={}", ticket.getId(), ticket.getPatientId());
+
+        auditService.record("QUEUE_ADMITTED", ticket.getPatientId(),
+                String.format("Patient admitted from queue: %s", ticket.getTicketNumber()));
 
         return ticket;
     }
@@ -636,7 +792,11 @@ public class QueueService {
         String staffId = sessionContext.username();
         String staffName = sessionContext.username(); // Could be enhanced with full name lookup
 
-        ticket.markCalled(staffId, staffName, counterNumber);
+        if ("CONSULTATION".equals(purpose)) {
+            ticket.markCalledForConsultation(sessionContext.userId(), staffId, staffName, counterNumber);
+        } else {
+            ticket.markCalled(staffId, staffName, counterNumber);
+        }
         ticket = queueRepository.save(ticket);
 
         auditService.record("QUEUE_PATIENT_CALLED", ticket.getPatientId(),
@@ -644,6 +804,118 @@ public class QueueService {
                         ticket.getTicketNumber(), counterNumber, purpose, staffName));
 
         return ticket;
+    }
+
+    /**
+     * Recomputes appointment-time priority boosts for waiting tickets.
+     *
+     * <p>Appointment patients receive a temporary queue boost near their scheduled
+     * time while preserving triage-first ordering.</p>
+     *
+     * @return number of tickets whose effective priority was updated
+     */
+    @Transactional
+    public int refreshAppointmentPriorityBoosts() {
+        if (!facilityWorkflowConfigService.isAppointmentFlowEnabled()
+                || !facilityWorkflowConfigService.isAppointmentPriorityBoostEnabled()) {
+            return 0;
+        }
+
+        int beforeMinutes = facilityWorkflowConfigService.getAppointmentPriorityBoostMinutesBefore();
+        int afterMinutes = facilityWorkflowConfigService.getAppointmentPriorityBoostMinutesAfter();
+        Instant now = Instant.now();
+
+        List<QueueTicket> waitingTickets = queueRepository.findByQueueDateAndStatusOrderByEffectivePriorityAscCreatedAtAsc(
+                LocalDate.now(),
+                QueueTicket.QueueStatus.WAITING
+        );
+
+        int changed = 0;
+        for (QueueTicket ticket : waitingTickets) {
+            if (!ticket.hasLinkedAppointment()) {
+                continue;
+            }
+
+            boolean shouldBoost = ticket.isWithinAppointmentPriorityWindow(now, beforeMinutes, afterMinutes);
+            boolean stateChanged = shouldBoost
+                    ? ticket.applyAppointmentPriorityBoost()
+                    : ticket.clearAppointmentPriorityBoost();
+
+            if (stateChanged) {
+                queueRepository.save(ticket);
+                changed++;
+            }
+        }
+        if (changed > 0) {
+            log.info("Appointment priority boosts updated count={}", changed);
+        }
+        return changed;
+    }
+
+    private Optional<QueueTicket> selectAssignedTicket(
+            List<QueueTicket> consultQueue,
+            UUID clinicianUserId,
+            String clinicianEmployeeId
+    ) {
+        return consultQueue.stream()
+                .filter(ticket -> ticket.isAssignedToClinician(clinicianUserId, clinicianEmployeeId))
+                .findFirst();
+    }
+
+    private Optional<QueueTicket> selectRepeatPatientTicket(
+            List<QueueTicket> consultQueue,
+            UUID clinicianUserId,
+            String clinicianEmployeeId
+    ) {
+        if (clinicianUserId == null) {
+            return Optional.empty();
+        }
+
+        List<UUID> patientIds = consultQueue.stream()
+                .map(QueueTicket::getPatientId)
+                .distinct()
+                .toList();
+
+        if (patientIds.isEmpty()) {
+            return Optional.empty();
+        }
+
+        Set<UUID> repeatPatientIds = new HashSet<>(
+                encounterRepository.findDistinctCompletedPatientIdsByClinicianIn(clinicianUserId, patientIds)
+        );
+
+        if (repeatPatientIds.isEmpty()) {
+            return Optional.empty();
+        }
+
+        return consultQueue.stream()
+                .filter(ticket -> repeatPatientIds.contains(ticket.getPatientId()))
+                .filter(ticket -> !isAssignedToAnotherClinician(ticket, clinicianUserId, clinicianEmployeeId))
+                .findFirst();
+    }
+
+    private boolean isAssignedToAnotherClinician(
+            QueueTicket ticket,
+            UUID clinicianUserId,
+            String clinicianEmployeeId
+    ) {
+        boolean hasAssignment = ticket.getAssignedClinicianUserId() != null
+                || (ticket.getAssignedClinicianEmployeeId() != null
+                && !ticket.getAssignedClinicianEmployeeId().isBlank());
+
+        return hasAssignment && !ticket.isAssignedToClinician(clinicianUserId, clinicianEmployeeId);
+    }
+
+    private boolean hasCompletedEncounterWithClinician(UUID patientId, UUID clinicianUserId) {
+        if (clinicianUserId == null) {
+            return false;
+        }
+        return encounterRepository.findDistinctCompletedPatientIdsByClinicianIn(
+                        clinicianUserId,
+                        List.of(patientId)
+                )
+                .stream()
+                .anyMatch(patientId::equals);
     }
 
     /**
@@ -709,6 +981,14 @@ public class QueueService {
             long waitingYellow,
             long waitingGreen,
             long waitingBlue
+    ) {
+    }
+
+    public record ClinicianHandoffInput(
+            String clinicianName,
+            String clinicianEmployeeId,
+            UUID clinicianUserId,
+            String handoffNotes
     ) {
     }
 

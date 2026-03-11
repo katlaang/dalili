@@ -7,6 +7,8 @@ import dalili.com.base.domain.encounter.repository.EncounterAddendumRepository;
 import dalili.com.base.domain.encounter.repository.EncounterRepository;
 import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +39,8 @@ import java.util.UUID;
  */
 @Service
 public class AddendumService {
+
+    private static final Logger log = LoggerFactory.getLogger(AddendumService.class);
 
     private final EncounterAddendumRepository addendumRepository;
     private final EncounterRepository encounterRepository;
@@ -81,6 +85,7 @@ public class AddendumService {
             String content
     ) {
         auditGuard.assertSessionActive();
+        log.info("Creating encounter addendum encounterId={} type={} reason={}", encounterId, type, reason);
 
         Encounter encounter = encounterRepository.findById(encounterId)
                 .orElseThrow(() -> new AddendumException("Encounter not found"));
@@ -115,6 +120,8 @@ public class AddendumService {
 
         auditService.record("ADDENDUM_CREATED", encounter.getPatientId(),
                 String.format("Addendum added to encounter. Type: %s, Reason: %s", type, reason));
+        log.info("Encounter addendum created addendumId={} encounterId={} patientId={}",
+                addendum.getId(), encounterId, encounter.getPatientId());
 
         return addendum;
     }
@@ -403,7 +410,9 @@ public class AddendumService {
      * @return list of addendums
      */
     public List<EncounterAddendum> getAddendums(UUID encounterId) {
-        return addendumRepository.findByEncounterIdOrderByCreatedAtAsc(encounterId);
+        List<EncounterAddendum> addendums = addendumRepository.findByEncounterIdOrderByCreatedAtAsc(encounterId);
+        log.info("Encounter addendums fetched encounterId={} count={}", encounterId, addendums.size());
+        return addendums;
     }
 
     /**
@@ -473,6 +482,7 @@ public class AddendumService {
      * @return verification result
      */
     public IntegrityVerificationResult verifyIntegrity(UUID encounterId) {
+        log.info("Verifying addendum integrity encounterId={}", encounterId);
         List<EncounterAddendum> addendums = getAddendums(encounterId);
 
         int total = addendums.size();
@@ -489,7 +499,10 @@ public class AddendumService {
             }
         }
 
-        return new IntegrityVerificationResult(total, valid, invalid, invalidIds);
+        IntegrityVerificationResult result = new IntegrityVerificationResult(total, valid, invalid, invalidIds);
+        log.info("Addendum integrity verification complete encounterId={} total={} invalid={}",
+                encounterId, result.totalAddendums(), result.invalidAddendums());
+        return result;
     }
 
     // ==================== RECORDS ====================
@@ -517,3 +530,5 @@ public class AddendumService {
         }
     }
 }
+
+

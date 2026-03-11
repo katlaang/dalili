@@ -6,6 +6,7 @@ import lombok.Getter;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -120,6 +121,90 @@ public class QueueTicket {
     @Column
     private UUID triageAssessmentId;
 
+    /**
+     * Computed triage summary captured for queue visibility.
+     */
+    @Column(length = 2000)
+    private String triageSummary;
+
+    /**
+     * Most likely diagnosis suggestion from AI triage outcome.
+     */
+    @Column(length = 500)
+    private String suggestedPrimaryDiagnosis;
+
+    /**
+     * Flattened suggested diagnoses from AI triage outcome.
+     */
+    @Column(length = 2000)
+    private String suggestedDiagnoses;
+
+    /**
+     * User UUID of the clinician assigned for consultation handoff.
+     */
+    @Column
+    private UUID assignedClinicianUserId;
+
+    /**
+     * Display name of the clinician assigned for consultation.
+     */
+    @Column(length = 255)
+    private String assignedClinicianName;
+
+    /**
+     * Employee/staff ID of the clinician assigned for consultation.
+     */
+    @Column(length = 120)
+    private String assignedClinicianEmployeeId;
+
+    /**
+     * Assignment source (for example: NURSE_HANDOFF, AUTO_REPEAT_MATCH, DIRECT_CALL).
+     */
+    @Column(length = 40)
+    private String clinicianAssignmentSource;
+
+    /**
+     * Optional nurse handoff notes for the receiving clinician.
+     */
+    @Column(length = 500)
+    private String clinicianHandoffNotes;
+
+    /**
+     * Timestamp when clinician assignment was captured.
+     */
+    @Column
+    private Instant clinicianAssignedAt;
+
+    /**
+     * Staff ID of the person who assigned the clinician.
+     */
+    @Column(length = 120)
+    private String clinicianAssignedByStaffId;
+
+    /**
+     * Name of the person who assigned the clinician.
+     */
+    @Column(length = 255)
+    private String clinicianAssignedByStaffName;
+
+    /**
+     * Timestamp when assigned clinician accepted handoff by calling patient.
+     */
+    @Column
+    private Instant clinicianHandoffAcceptedAt;
+
+    /**
+     * Staff ID of clinician who accepted handoff.
+     */
+    @Column(length = 120)
+    private String clinicianHandoffAcceptedByStaffId;
+
+    /**
+     * Display name of clinician who accepted handoff.
+     */
+    @Column(length = 255)
+    private String clinicianHandoffAcceptedByStaffName;
+
     // ==================== TIMESTAMPS ====================
 
     /**
@@ -206,6 +291,48 @@ public class QueueTicket {
     @Column(length = 500)
     private String escalationReason;
 
+    /**
+     * Reason for admission decision (if admitted from queue workflow).
+     */
+    @Column(length = 500)
+    private String admissionReason;
+
+    /**
+     * Linked appointment UUID (for appointment check-in flow).
+     */
+    @Column
+    private UUID appointmentId;
+
+    /**
+     * Scheduled appointment timestamp.
+     */
+    @Column
+    private Instant appointmentScheduledAt;
+
+    /**
+     * Appointment check-in window open timestamp.
+     */
+    @Column
+    private Instant appointmentWindowOpensAt;
+
+    /**
+     * Appointment check-in window close timestamp.
+     */
+    @Column
+    private Instant appointmentWindowClosesAt;
+
+    /**
+     * Whether appointment-time priority boost is currently active.
+     */
+    @Column(nullable = false)
+    private boolean appointmentPriorityBoostApplied = false;
+
+    /**
+     * Timestamp when appointment-time priority boost was applied.
+     */
+    @Column
+    private Instant appointmentPriorityBoostAppliedAt;
+
     // ==================== FLAGS ====================
 
     /**
@@ -256,7 +383,7 @@ public class QueueTicket {
         ticket.issuedBy = issuedBy;
         ticket.status = QueueStatus.WAITING;
         ticket.createdAt = Instant.now();
-        ticket.effectivePriority = calculateEffectivePriority(TriageLevel.GREEN, priorityModifier);
+        ticket.effectivePriority = calculateEffectivePriority(TriageLevel.GREEN, priorityModifier, false);
         return ticket;
     }
 
@@ -291,7 +418,11 @@ public class QueueTicket {
         ticket.status = QueueStatus.WAITING;
         ticket.createdAt = Instant.now();
         ticket.ambulanceArrival = true;
-        ticket.effectivePriority = calculateEffectivePriority(TriageLevel.ORANGE, PriorityModifier.AMBULANCE_ARRIVAL);
+        ticket.effectivePriority = calculateEffectivePriority(
+                TriageLevel.ORANGE,
+                PriorityModifier.AMBULANCE_ARRIVAL,
+                false
+        );
         return ticket;
     }
 
@@ -313,6 +444,54 @@ public class QueueTicket {
     }
 
     /**
+     * Calculates effective priority including appointment-time boost.
+     */
+    private static int calculateEffectivePriority(
+            TriageLevel triage,
+            PriorityModifier modifier,
+            boolean appointmentBoostApplied
+    ) {
+        int appointmentBoost = appointmentBoostApplied ? 2 : 0;
+        return calculateEffectivePriority(triage, modifier) - appointmentBoost;
+    }
+
+    private static String sanitizeDiagnosisList(List<String> values, int maxLen) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        for (String value : values) {
+            if (value == null || value.isBlank()) {
+                continue;
+            }
+            if (!builder.isEmpty()) {
+                builder.append(" | ");
+            }
+            builder.append(value.trim());
+        }
+
+        if (builder.isEmpty()) {
+            return null;
+        }
+        return sanitizeText(builder.toString(), maxLen);
+    }
+
+    private static String sanitizeText(String value, int maxLen) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.length() <= maxLen) {
+            return trimmed;
+        }
+        return trimmed.substring(0, maxLen);
+    }
+
+    /**
      * Updates the triage level after nurse assessment.
      *
      * <p>Called by TriageService after completing the triage assessment.
@@ -326,10 +505,153 @@ public class QueueTicket {
         this.triageAssessmentId = triageAssessmentId;
         this.triaged = true;
         this.triagedAt = Instant.now();
-        this.effectivePriority = calculateEffectivePriority(newTriageLevel, this.priorityModifier);
+        this.effectivePriority = calculateEffectivePriority(newTriageLevel, this.priorityModifier, this.appointmentPriorityBoostApplied);
+    }
+
+    /**
+     * Links this queue ticket to an appointment check-in context.
+     */
+    public void linkToAppointment(
+            UUID appointmentId,
+            Instant scheduledAt,
+            Instant windowOpensAt,
+            Instant windowClosesAt
+    ) {
+        if (appointmentId == null) {
+            throw new IllegalArgumentException("appointmentId is required");
+        }
+        if (scheduledAt == null || windowOpensAt == null || windowClosesAt == null) {
+            throw new IllegalArgumentException("Appointment schedule timestamps are required");
+        }
+        this.appointmentId = appointmentId;
+        this.appointmentScheduledAt = scheduledAt;
+        this.appointmentWindowOpensAt = windowOpensAt;
+        this.appointmentWindowClosesAt = windowClosesAt;
+    }
+
+    /**
+     * Attaches triage outcome details for direct queue visibility.
+     *
+     * @param triageSummary             short summary of triage findings
+     * @param suggestedPrimaryDiagnosis top suggested diagnosis, if available
+     * @param suggestedDiagnoses        suggested diagnosis list, if available
+     */
+    public void attachTriageOutcome(
+            String triageSummary,
+            String suggestedPrimaryDiagnosis,
+            List<String> suggestedDiagnoses
+    ) {
+        this.triageSummary = sanitizeText(triageSummary, 2000);
+        this.suggestedPrimaryDiagnosis = sanitizeText(suggestedPrimaryDiagnosis, 500);
+        this.suggestedDiagnoses = sanitizeDiagnosisList(suggestedDiagnoses, 2000);
+    }
+
+    /**
+     * Captures triage-to-clinician assignment details before consultation.
+     *
+     * @param clinicianName       receiving clinician name
+     * @param clinicianEmployeeId receiving clinician employee ID
+     * @param clinicianUserId     receiving clinician user UUID (if known)
+     * @param assignedByStaffId   handoff initiator staff ID
+     * @param assignedByStaffName handoff initiator display name
+     * @param assignmentSource    assignment source marker
+     * @param handoffNotes        optional handoff notes
+     */
+    public void assignClinician(
+            String clinicianName,
+            String clinicianEmployeeId,
+            UUID clinicianUserId,
+            String assignedByStaffId,
+            String assignedByStaffName,
+            String assignmentSource,
+            String handoffNotes
+    ) {
+        String normalizedClinicianName = sanitizeText(clinicianName, 255);
+        if (normalizedClinicianName == null) {
+            throw new IllegalArgumentException("Assigned clinician name is required");
+        }
+
+        String normalizedEmployeeId = sanitizeText(clinicianEmployeeId, 120);
+        if (normalizedEmployeeId == null) {
+            throw new IllegalArgumentException("Assigned clinician employee ID is required");
+        }
+
+        String normalizedAssignedById = sanitizeText(assignedByStaffId, 120);
+        if (normalizedAssignedById == null) {
+            throw new IllegalArgumentException("Assigned-by staff ID is required");
+        }
+
+        String normalizedAssignedByName = sanitizeText(assignedByStaffName, 255);
+        if (normalizedAssignedByName == null) {
+            throw new IllegalArgumentException("Assigned-by staff name is required");
+        }
+
+        String normalizedSource = sanitizeText(assignmentSource, 40);
+        if (normalizedSource == null) {
+            throw new IllegalArgumentException("Assignment source is required");
+        }
+
+        this.assignedClinicianName = normalizedClinicianName;
+        this.assignedClinicianEmployeeId = normalizedEmployeeId;
+        this.assignedClinicianUserId = clinicianUserId;
+        this.clinicianAssignedByStaffId = normalizedAssignedById;
+        this.clinicianAssignedByStaffName = normalizedAssignedByName;
+        this.clinicianAssignmentSource = normalizedSource;
+        this.clinicianAssignedAt = Instant.now();
+        this.clinicianHandoffNotes = sanitizeText(handoffNotes, 500);
     }
 
     // ==================== STATUS TRANSITIONS ====================
+
+    /**
+     * Returns true if this ticket is assigned to the supplied clinician identity.
+     *
+     * @param clinicianUserId     current clinician user UUID
+     * @param clinicianEmployeeId current clinician employee ID
+     * @return true when either user UUID or employee ID matches
+     */
+    public boolean isAssignedToClinician(UUID clinicianUserId, String clinicianEmployeeId) {
+        if (this.assignedClinicianUserId != null && clinicianUserId != null
+                && this.assignedClinicianUserId.equals(clinicianUserId)) {
+            return true;
+        }
+        if (this.assignedClinicianEmployeeId == null || clinicianEmployeeId == null) {
+            return false;
+        }
+        return this.assignedClinicianEmployeeId.equalsIgnoreCase(clinicianEmployeeId.trim());
+    }
+
+    /**
+     * Marks a clinician handoff as accepted and transitions ticket to CALLED state.
+     *
+     * @param clinicianUserId clinician user UUID
+     * @param staffId         clinician employee/staff ID
+     * @param staffName       clinician display name
+     * @param counterNumber   consultation room/counter
+     */
+    public void markCalledForConsultation(
+            UUID clinicianUserId,
+            String staffId,
+            String staffName,
+            String counterNumber
+    ) {
+        if (this.assignedClinicianEmployeeId == null && this.assignedClinicianUserId == null) {
+            assignClinician(
+                    staffName != null && !staffName.isBlank() ? staffName : staffId,
+                    staffId,
+                    clinicianUserId,
+                    staffId,
+                    staffName != null && !staffName.isBlank() ? staffName : staffId,
+                    "DIRECT_CALL",
+                    null
+            );
+        }
+
+        this.clinicianHandoffAcceptedAt = Instant.now();
+        this.clinicianHandoffAcceptedByStaffId = sanitizeText(staffId, 120);
+        this.clinicianHandoffAcceptedByStaffName = sanitizeText(staffName, 255);
+        markCalled(staffId, staffName, counterNumber);
+    }
 
     /**
      * Escalates the patient's priority due to condition change.
@@ -344,10 +666,33 @@ public class QueueTicket {
     public void escalatePriority(TriageLevel newTriageLevel, String reason, String staffId) {
         this.triageLevel = newTriageLevel;
         this.priorityModifier = PriorityModifier.DETERIORATING;
-        this.effectivePriority = calculateEffectivePriority(newTriageLevel, PriorityModifier.DETERIORATING);
+        this.effectivePriority = calculateEffectivePriority(
+                newTriageLevel,
+                PriorityModifier.DETERIORATING,
+                this.appointmentPriorityBoostApplied
+        );
         this.escalationReason = reason;
         this.lastEscalatedAt = Instant.now();
         this.escalatedByStaffId = staffId;
+    }
+
+    /**
+     * Returns true when this queue ticket is linked to an appointment.
+     */
+    public boolean hasLinkedAppointment() {
+        return this.appointmentId != null && this.appointmentScheduledAt != null;
+    }
+
+    /**
+     * Returns true if now falls in the appointment priority-boost window.
+     */
+    public boolean isWithinAppointmentPriorityWindow(Instant now, int minutesBefore, int minutesAfter) {
+        if (!hasLinkedAppointment() || now == null) {
+            return false;
+        }
+        Instant windowStart = this.appointmentScheduledAt.minusSeconds(minutesBefore * 60L);
+        Instant windowEnd = this.appointmentScheduledAt.plusSeconds(minutesAfter * 60L);
+        return !now.isBefore(windowStart) && !now.isAfter(windowEnd);
     }
 
     /**
@@ -393,6 +738,21 @@ public class QueueTicket {
     }
 
     /**
+     * Applies appointment-time priority boost if needed.
+     *
+     * @return true when state changed
+     */
+    public boolean applyAppointmentPriorityBoost() {
+        if (this.appointmentPriorityBoostApplied) {
+            return false;
+        }
+        this.appointmentPriorityBoostApplied = true;
+        this.appointmentPriorityBoostAppliedAt = Instant.now();
+        this.effectivePriority = calculateEffectivePriority(this.triageLevel, this.priorityModifier, true);
+        return true;
+    }
+
+    /**
      * Marks consultation as completed.
      *
      * @param staffId ID of clinician completing consultation
@@ -412,6 +772,20 @@ public class QueueTicket {
         this.status = QueueStatus.NO_SHOW;
         this.completedAt = Instant.now();
         this.completedByStaffId = staffId;
+    }
+
+    /**
+     * Clears appointment-time priority boost if needed.
+     *
+     * @return true when state changed
+     */
+    public boolean clearAppointmentPriorityBoost() {
+        if (!this.appointmentPriorityBoostApplied) {
+            return false;
+        }
+        this.appointmentPriorityBoostApplied = false;
+        this.effectivePriority = calculateEffectivePriority(this.triageLevel, this.priorityModifier, false);
+        return true;
     }
 
     // ==================== CALCULATED PROPERTIES ====================
@@ -470,6 +844,38 @@ public class QueueTicket {
         }
         Instant endTime = (completedAt != null) ? completedAt : Instant.now();
         return java.time.Duration.between(startedAt, endTime).toMinutes();
+    }
+
+    /**
+     * Returns a triaged patient back to the waiting queue for consultation.
+     *
+     * <p>This transition is used after nurse triage is completed. It clears
+     * active call/session metadata so the patient can be called again by
+     * physician workflow.</p>
+     */
+    public void returnToWaitingAfterTriage() {
+        this.status = QueueStatus.WAITING;
+        this.calledAt = null;
+        this.calledByStaffId = null;
+        this.calledByStaffName = null;
+        this.counterNumber = null;
+        this.startedAt = null;
+        this.startedByStaffId = null;
+        this.completedAt = null;
+        this.completedByStaffId = null;
+    }
+
+    /**
+     * Marks patient as admitted.
+     *
+     * @param staffId ID of staff finalizing admission
+     * @param reason  reason or note for admission decision
+     */
+    public void markAdmitted(String staffId, String reason) {
+        this.status = QueueStatus.ADMITTED;
+        this.completedAt = Instant.now();
+        this.completedByStaffId = staffId;
+        this.admissionReason = sanitizeText(reason, 500);
     }
 
     // ==================== ENUMS ====================
@@ -562,6 +968,10 @@ public class QueueTicket {
          * Patient did not respond after being called
          */
         NO_SHOW,
+        /**
+         * Patient admitted for inpatient care.
+         */
+        ADMITTED,
         /**
          * Ticket was cancelled
          */

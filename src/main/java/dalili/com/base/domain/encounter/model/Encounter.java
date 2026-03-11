@@ -153,6 +153,24 @@ public class Encounter {
     private NoteAccuracyRating aiAccuracyRating;
 
     /**
+     * System-computed transcript alignment score for final note (0-100).
+     */
+    @Column
+    private Integer transcriptAccuracyScore;
+
+    /**
+     * System-computed discrepancy summary between transcript and final note.
+     */
+    @Column(length = 2000)
+    private String transcriptDiscrepancySummary;
+
+    /**
+     * Timestamp when transcript accuracy/discrepancy was computed.
+     */
+    @Column
+    private Instant transcriptAccuracyComputedAt;
+
+    /**
      * Physician's comments on AI draft corrections.
      */
     @Column(length = 1000)
@@ -196,6 +214,70 @@ public class Encounter {
      */
     @Column
     private Instant aiProcessedAt;
+
+    // ==================== CARE PLAN AGREEMENT ====================
+
+    /**
+     * Whether suggested care plan agreement is required before completion.
+     */
+    @Column(nullable = false)
+    private boolean carePlanAgreementRequired = false;
+
+    /**
+     * Whether physician has agreed to the current suggested care plan set.
+     */
+    @Column(nullable = false)
+    private boolean carePlanAgreed = false;
+
+    /**
+     * Timestamp when care plan suggestions were last generated.
+     */
+    @Column
+    private Instant carePlanSuggestedAt;
+
+    /**
+     * Timestamp when physician agreed with care plan suggestions.
+     */
+    @Column
+    private Instant carePlanAgreedAt;
+
+    /**
+     * Staff ID who agreed with care plan suggestions.
+     */
+    @Column
+    private String carePlanAgreedBy;
+
+    /**
+     * Snapshot summary of latest generated care plan suggestions.
+     */
+    @Column(length = 2000)
+    private String carePlanSuggestionSummary;
+
+    // ==================== DIAGNOSIS AGREEMENT ====================
+
+    /**
+     * Whether physician agreement is required for current diagnosis set.
+     */
+    @Column(nullable = false)
+    private boolean diagnosisAgreementRequired = false;
+
+    /**
+     * Whether physician explicitly agreed to current diagnosis set.
+     */
+    @Column(nullable = false)
+    private boolean diagnosisAgreed = false;
+
+    /**
+     * Timestamp when physician agreed diagnosis set.
+     */
+    @Column
+    private Instant diagnosisAgreedAt;
+
+    /**
+     * Staff ID who agreed diagnosis set.
+     */
+    @Column
+    private String diagnosisAgreedBy;
 
     // ==================== DIAGNOSES ====================
 
@@ -395,25 +477,13 @@ public class Encounter {
     }
 
     /**
-     * Confirms the final note with AI accuracy rating.
-     *
-     * <p><strong>Invariants:</strong>
-     * <ul>
-     *   <li>Physician-authored note must exist</li>
-     *   <li>Can only confirm once (immutable after)</li>
-     * </ul>
-     * </p>
-     *
-     * @param finalNote          the final confirmed note
-     * @param accuracyRating     physician's rating of AI accuracy
-     * @param correctionComments optional comments on corrections
-     * @param confirmedBy        staff ID confirming the note
-     * @throws IllegalStateException    if physician note missing or already confirmed
-     * @throws IllegalArgumentException if finalNote is blank
+     * Confirms final note using system-computed transcript discrepancy and accuracy.
      */
-    public void confirmNote(
+    public void confirmNoteWithSystemAssessment(
             String finalNote,
-            NoteAccuracyRating accuracyRating,
+            NoteAccuracyRating systemAccuracyRating,
+            Integer systemTranscriptScore,
+            String systemDiscrepancySummary,
             String correctionComments,
             String confirmedBy
     ) {
@@ -428,9 +498,15 @@ public class Encounter {
         if (finalNote == null || finalNote.isBlank()) {
             throw new IllegalArgumentException("Final note cannot be blank");
         }
+        if (systemAccuracyRating == null) {
+            throw new IllegalArgumentException("System transcript accuracy rating is required");
+        }
 
         this.finalNote = finalNote;
-        this.aiAccuracyRating = accuracyRating;
+        this.aiAccuracyRating = systemAccuracyRating;
+        this.transcriptAccuracyScore = systemTranscriptScore;
+        this.transcriptDiscrepancySummary = systemDiscrepancySummary;
+        this.transcriptAccuracyComputedAt = Instant.now();
         this.aiCorrectionComments = correctionComments;
         this.noteConfirmed = true;
         this.noteConfirmedAt = Instant.now();
@@ -440,7 +516,7 @@ public class Encounter {
     /**
      * Confirms the final note without AI comparison.
      *
-     * <p>Use this when no AI draft was generated (manual documentation only).</p>
+     * <p>Use this when no AI draft was generated or AI is unavailable (manual/offline flow).</p>
      *
      * @param finalNote   the final confirmed note
      * @param confirmedBy staff ID confirming the note
@@ -461,6 +537,10 @@ public class Encounter {
         }
 
         this.finalNote = finalNote;
+        this.aiAccuracyRating = NoteAccuracyRating.NOT_ASSESSED;
+        this.transcriptAccuracyScore = null;
+        this.transcriptDiscrepancySummary = "AI comparison skipped (manual/offline confirmation).";
+        this.transcriptAccuracyComputedAt = Instant.now();
         this.noteConfirmed = true;
         this.noteConfirmedAt = Instant.now();
         this.noteConfirmedBy = confirmedBy;
@@ -505,6 +585,10 @@ public class Encounter {
         assertNotCompleted();
         diagnoses.add(diagnosis);
         diagnosis.setEncounter(this);
+        this.diagnosisAgreementRequired = true;
+        this.diagnosisAgreed = false;
+        this.diagnosisAgreedAt = null;
+        this.diagnosisAgreedBy = null;
     }
 
     /**
@@ -517,6 +601,17 @@ public class Encounter {
         assertNotCompleted();
         diagnoses.remove(diagnosis);
         diagnosis.setEncounter(null);
+        if (diagnoses.isEmpty()) {
+            this.diagnosisAgreementRequired = false;
+            this.diagnosisAgreed = false;
+            this.diagnosisAgreedAt = null;
+            this.diagnosisAgreedBy = null;
+        } else {
+            this.diagnosisAgreementRequired = true;
+            this.diagnosisAgreed = false;
+            this.diagnosisAgreedAt = null;
+            this.diagnosisAgreedBy = null;
+        }
     }
 
     /**
@@ -582,6 +677,45 @@ public class Encounter {
     }
 
     /**
+     * Marks that suggestions were generated and requires physician agreement.
+     */
+    public void markCarePlanSuggested(String summary) {
+        assertNotCompleted();
+        this.carePlanAgreementRequired = true;
+        this.carePlanAgreed = false;
+        this.carePlanAgreedAt = null;
+        this.carePlanAgreedBy = null;
+        this.carePlanSuggestedAt = Instant.now();
+        this.carePlanSuggestionSummary = summary;
+    }
+
+    /**
+     * Captures physician agreement for the latest suggested care plan.
+     */
+    public void agreeSuggestedCarePlan(String staffId) {
+        assertNotCompleted();
+        if (!this.carePlanAgreementRequired) {
+            return;
+        }
+        this.carePlanAgreed = true;
+        this.carePlanAgreedAt = Instant.now();
+        this.carePlanAgreedBy = staffId;
+    }
+
+    /**
+     * Captures physician agreement on the active diagnosis set.
+     */
+    public void agreeDiagnoses(String staffId) {
+        assertNotCompleted();
+        if (!this.diagnosisAgreementRequired || this.diagnoses.isEmpty()) {
+            return;
+        }
+        this.diagnosisAgreed = true;
+        this.diagnosisAgreedAt = Instant.now();
+        this.diagnosisAgreedBy = staffId;
+    }
+
+    /**
      * Completes the encounter.
      *
      * <p><strong>Invariant:</strong> Note must be confirmed before completion.
@@ -595,6 +729,12 @@ public class Encounter {
         }
         if (!this.noteConfirmed) {
             throw new IllegalStateException("Cannot complete encounter without confirmed note");
+        }
+        if (this.carePlanAgreementRequired && !this.carePlanAgreed) {
+            throw new IllegalStateException("Physician agreement for suggested care plan is required");
+        }
+        if (this.diagnosisAgreementRequired && !this.diagnosisAgreed) {
+            throw new IllegalStateException("Physician diagnosis agreement is required");
         }
 
         this.status = EncounterStatus.COMPLETED;
@@ -649,6 +789,12 @@ public class Encounter {
         StringBuilder sb = new StringBuilder();
         if (!noteConfirmed) {
             sb.append("Note not confirmed. ");
+        }
+        if (carePlanAgreementRequired && !carePlanAgreed) {
+            sb.append("Suggested care plan not agreed by physician. ");
+        }
+        if (diagnosisAgreementRequired && !diagnosisAgreed) {
+            sb.append("Diagnosis not agreed by physician. ");
         }
         if (diagnoses.isEmpty()) {
             sb.append("No diagnosis recorded (optional). ");
@@ -753,6 +899,10 @@ public class Encounter {
         /**
          * AI note contained unsafe or incorrect clinical content
          */
-        UNSAFE
+        UNSAFE,
+        /**
+         * No transcript was available for automated discrepancy scoring.
+         */
+        NOT_ASSESSED
     }
 }

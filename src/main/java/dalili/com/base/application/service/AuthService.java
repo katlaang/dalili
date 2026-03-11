@@ -5,6 +5,8 @@ import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.domain.user.model.User;
 import dalili.com.base.domain.user.repository.UserRepository;
 import dalili.com.base.interfaces.security.jwt.JwtService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +16,8 @@ import java.util.UUID;
 
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -54,6 +58,7 @@ public class AuthService {
                 user.getId(), user.getUsername(), user.getRole());
 
         sessionActivityService.touch(result.sessionId(), user.getId(), user.getActorType());
+        log.info("Staff authenticated userId={} role={}", user.getId(), user.getRole());
 
         return result.token();
     }
@@ -77,6 +82,7 @@ public class AuthService {
                 user.getId(), user.getUsername(), user.getPatientId());
 
         sessionActivityService.touch(result.sessionId(), user.getId(), user.getActorType());
+        log.info("Patient authenticated patientId={}", user.getPatientId());
 
         return result.token();
     }
@@ -85,12 +91,7 @@ public class AuthService {
      * Kiosk check-in - patient identifies with MRN + DOB
      */
     public String kioskCheckIn(String kioskDeviceId, String mrn, String dobString) {
-        User kiosk = userRepository.findByUsernameAndActiveTrue(kioskDeviceId)
-                .orElseThrow(() -> new AuthenticationException("Unknown kiosk device"));
-
-        if (!kiosk.isKiosk()) {
-            throw new AuthenticationException("Invalid device");
-        }
+        User kiosk = resolveKioskDevice(kioskDeviceId);
 
         LocalDate dob = parseDateOfBirth(dobString);
 
@@ -105,7 +106,35 @@ public class AuthService {
                 kiosk.getId(), kioskDeviceId, patient.getId());
 
         sessionActivityService.createKioskSession(result.sessionId(), kiosk.getId(), patient.getId());
+        log.info("Kiosk check-in authenticated kioskUserId={} patientId={}", kiosk.getId(), patient.getId());
+        return result.token();
+    }
 
+    /**
+     * Kiosk check-in by patient demographics. Creates patient record if not found.
+     */
+    public String kioskIdentifyByName(
+            String kioskDeviceId,
+            String givenName,
+            String familyName,
+            String dobString,
+            Patient.Sex sex
+    ) {
+        User kiosk = resolveKioskDevice(kioskDeviceId);
+        LocalDate dob = parseDateOfBirth(dobString);
+
+        Patient patient;
+        try {
+            patient = patientService.resolveOrRegisterForKioskCheckIn(givenName, familyName, dob, sex);
+        } catch (PatientService.PatientException e) {
+            throw new AuthenticationException(e.getMessage());
+        }
+
+        JwtService.TokenResult result = jwtService.generateKioskToken(
+                kiosk.getId(), kioskDeviceId, patient.getId());
+
+        sessionActivityService.createKioskSession(result.sessionId(), kiosk.getId(), patient.getId());
+        log.info("Kiosk identify authenticated kioskUserId={} patientId={}", kiosk.getId(), patient.getId());
         return result.token();
     }
 
@@ -122,7 +151,9 @@ public class AuthService {
         }
 
         User user = User.createStaff(username, passwordEncoder.encode(password), fullName, role);
-        return userRepository.save(user);
+        User saved = userRepository.save(user);
+        log.info("Staff user registered userId={} role={}", saved.getId(), saved.getRole());
+        return saved;
     }
 
     /**
@@ -141,7 +172,9 @@ public class AuthService {
                 patient.getFullName(),
                 patientId
         );
-        return userRepository.save(user);
+        User saved = userRepository.save(user);
+        log.info("Patient portal user registered userId={} patientId={}", saved.getId(), patientId);
+        return saved;
     }
 
     /**
@@ -153,7 +186,9 @@ public class AuthService {
         }
 
         User user = User.createKiosk(deviceId, passwordEncoder.encode(deviceSecret), locationDescription);
-        return userRepository.save(user);
+        User saved = userRepository.save(user);
+        log.info("Kiosk device registered userId={} deviceId={}", saved.getId(), deviceId);
+        return saved;
     }
 
     /**
@@ -161,6 +196,7 @@ public class AuthService {
      */
     public void logout(UUID sessionId) {
         sessionActivityService.invalidateSession(sessionId);
+        log.info("Session logout completed sessionId={}", sessionId);
     }
 
     private LocalDate parseDateOfBirth(String dobString) {
@@ -170,8 +206,19 @@ public class AuthService {
             }
             return LocalDate.parse(dobString, DateTimeFormatter.ISO_LOCAL_DATE);
         } catch (Exception e) {
+            log.warn("Invalid date-of-birth format provided");
             throw new AuthenticationException("Invalid date format. Use YYYYMMDD or YYYY-MM-DD");
         }
+    }
+
+    private User resolveKioskDevice(String kioskDeviceId) {
+        User kiosk = userRepository.findByUsernameAndActiveTrue(kioskDeviceId)
+                .orElseThrow(() -> new AuthenticationException("Unknown kiosk device"));
+
+        if (!kiosk.isKiosk()) {
+            throw new AuthenticationException("Invalid device");
+        }
+        return kiosk;
     }
 
     public static class AuthenticationException extends RuntimeException {

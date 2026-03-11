@@ -28,6 +28,9 @@ public class AiConfig {
     @Value("${dalili.ai.model:llama-3.1-70b-versatile}")
     private String model;
 
+    @Value("${dalili.ai.transcription-model:whisper-large-v3-turbo}")
+    private String transcriptionModel;
+
     @Value("${dalili.ai.enabled:true}")
     private boolean aiEnabled;
 
@@ -68,6 +71,20 @@ public class AiConfig {
             LlmProviderAdapter llmProvider,
             ConnectivityMonitor connectivityMonitor) {
         return new SoapExtractionService(llmProvider, connectivityMonitor);
+    }
+
+    @Bean
+    public NoteComparisonService noteComparisonService(
+            LlmProviderAdapter llmProvider,
+            ConnectivityMonitor connectivityMonitor) {
+        return new NoteComparisonService(llmProvider, connectivityMonitor);
+    }
+
+    @Bean
+    public AmbientTranscriptionService ambientTranscriptionService(
+            ConnectivityMonitor connectivityMonitor
+    ) {
+        return new AmbientTranscriptionService(groqApiKey, transcriptionModel, connectivityMonitor);
     }
 
     /**

@@ -1,5 +1,6 @@
 package dalili.com.base.application.controller;
 
+import dalili.com.base.application.service.ClinicalAiService;
 import dalili.com.base.application.service.TriageService;
 import dalili.com.base.domain.triage.TriageAssessment;
 import dalili.com.base.domain.triage.TriageLevel;
@@ -10,6 +11,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -38,15 +41,19 @@ import java.util.UUID;
 @Tag(name = "Triage Assessment", description = "APIs for clinical triage assessment and vital sign recording")
 public class TriageController {
 
+    private static final Logger log = LoggerFactory.getLogger(TriageController.class);
+
     private final TriageService triageService;
+    private final ClinicalAiService clinicalAiService;
 
     /**
      * Constructs a new TriageController.
      *
      * @param triageService the triage service
      */
-    public TriageController(TriageService triageService) {
+    public TriageController(TriageService triageService, ClinicalAiService clinicalAiService) {
         this.triageService = triageService;
+        this.clinicalAiService = clinicalAiService;
     }
 
     // ==================== ASSESSMENT CREATION ====================
@@ -72,12 +79,15 @@ public class TriageController {
     @PostMapping("/begin")
     public ResponseEntity<?> beginAssessment(@RequestBody BeginAssessmentRequest request) {
         try {
+            log.info("Begin triage assessment request queueTicketId={}", request.queueTicketId());
             TriageAssessment assessment = triageService.beginAssessment(
                     request.queueTicketId(),
                     request.chiefComplaint()
             );
+            log.info("Triage assessment started assessmentId={} patientId={}", assessment.getId(), assessment.getPatientId());
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
         } catch (TriageService.TriageException e) {
+            log.warn("Begin triage assessment failed queueTicketId={} reason={}", request.queueTicketId(), e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -136,6 +146,7 @@ public class TriageController {
             @RequestBody VitalsRequest request
     ) {
         try {
+            log.info("Record triage vitals request assessmentId={}", assessmentId);
             TriageService.VitalsInput vitals = new TriageService.VitalsInput(
                     request.temperatureCelsius(),
                     request.heartRateBpm(),
@@ -150,8 +161,11 @@ public class TriageController {
                     request.consciousnessLevel()
             );
             TriageAssessment assessment = triageService.recordVitals(assessmentId, vitals);
+            log.info("Triage vitals recorded assessmentId={} patientId={} suggestedLevel={}",
+                    assessment.getId(), assessment.getPatientId(), assessment.getSystemTriageLevel());
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
         } catch (TriageService.TriageException e) {
+            log.warn("Record triage vitals failed assessmentId={} reason={}", assessmentId, e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -259,9 +273,13 @@ public class TriageController {
             @Parameter(description = "Assessment UUID") @PathVariable UUID assessmentId
     ) {
         try {
+            log.info("Accept triage request assessmentId={}", assessmentId);
             TriageAssessment assessment = triageService.acceptSystemTriage(assessmentId);
+            log.info("Triage accepted assessmentId={} patientId={} finalLevel={}",
+                    assessment.getId(), assessment.getPatientId(), assessment.getFinalTriageLevel());
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
         } catch (TriageService.TriageException e) {
+            log.warn("Accept triage failed assessmentId={} reason={}", assessmentId, e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -290,13 +308,17 @@ public class TriageController {
             @RequestBody OverrideRequest request
     ) {
         try {
+            log.info("Override triage request assessmentId={} newLevel={}", assessmentId, request.newTriageLevel());
             TriageAssessment assessment = triageService.overrideTriage(
                     assessmentId,
                     request.newTriageLevel(),
                     request.reason()
             );
+            log.info("Triage overridden assessmentId={} patientId={} finalLevel={}",
+                    assessment.getId(), assessment.getPatientId(), assessment.getFinalTriageLevel());
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
         } catch (TriageService.TriageException e) {
+            log.warn("Override triage failed assessmentId={} reason={}", assessmentId, e.getMessage());
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
@@ -397,6 +419,24 @@ public class TriageController {
             return ResponseEntity.ok(new TriageSummaryResponse(summary));
         } catch (TriageService.TriageException e) {
             return ResponseEntity.notFound().build();
+        }
+    }
+
+    @Operation(
+            summary = "Get triage outcome with queue impact and AI suggestions",
+            description = "Returns final triage output, queue position impact, and AI-assisted differential suggestions."
+    )
+    @PostMapping("/{assessmentId}/outcome")
+    public ResponseEntity<?> getTriageOutcome(
+            @Parameter(description = "Assessment UUID") @PathVariable UUID assessmentId,
+            @RequestBody(required = false) OutcomeRequest request
+    ) {
+        try {
+            String physicalExam = request != null ? request.physicalExam() : null;
+            var outcome = clinicalAiService.generateTriageOutcome(assessmentId, physicalExam);
+            return ResponseEntity.ok(outcome);
+        } catch (ClinicalAiService.ClinicalAiException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
     }
 
@@ -542,6 +582,13 @@ public class TriageController {
     public record TriageSummaryResponse(
             @Schema(description = "Summary explaining triage factors")
             String summary
+    ) {
+    }
+
+    @Schema(description = "Optional additional clinical exam input for outcome generation")
+    public record OutcomeRequest(
+            @Schema(description = "Physical exam summary to improve differential suggestions")
+            String physicalExam
     ) {
     }
 
@@ -732,3 +779,5 @@ public class TriageController {
         }
     }
 }
+
+

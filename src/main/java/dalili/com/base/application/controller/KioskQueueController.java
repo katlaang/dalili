@@ -214,6 +214,31 @@ public class KioskQueueController {
     }
 
     @Operation(
+            summary = "Verify appointment access for kiosk",
+            description = "Validates patient appointment access using patient ID + access code or QR token."
+    )
+    @PostMapping("/appointments/verify")
+    public ResponseEntity<?> verifyAppointments(@RequestBody AppointmentVerificationRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+            var pending = appointmentService.getKioskPendingAppointments(
+                            request.patientId(),
+                            request.accessCode(),
+                            request.qrToken()
+                    ).stream()
+                    .map(AppointmentView::from)
+                    .toList();
+            if (pending.isEmpty()) {
+                return ResponseEntity.badRequest().body(new ErrorResponse("No pending appointments found for provided credentials"));
+            }
+            return ResponseEntity.ok(pending);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
             summary = "Check-in pending appointment from kiosk",
             description = "Checks in a pending appointment and creates appointment-linked queue ticket."
     )
@@ -242,6 +267,204 @@ public class KioskQueueController {
             return ResponseEntity.ok(new AppointmentCheckInResponse(
                     AppointmentView.from(result.appointment()),
                     QueueController.TicketResponse.from(result.queueTicket())
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Confirm appointment and issue kiosk queue number",
+            description = "Confirms patient identity for a specific appointment using access code or QR token, " +
+                    "then checks in and returns queue ticket."
+    )
+    @PostMapping("/appointments/confirm")
+    public ResponseEntity<?> confirmAppointmentCheckIn(@RequestBody AppointmentConfirmRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+            if (Boolean.TRUE.equals(request.consentForDataAccess())) {
+                patientDataAccessService.recordPatientConsent(request.patientId());
+            }
+            var result = appointmentService.checkInAppointmentFromKiosk(
+                    request.patientId(),
+                    request.appointmentId(),
+                    request.accessCode(),
+                    request.qrToken(),
+                    request.complaint()
+            );
+            log.info("Kiosk appointment confirmed appointmentId={} patientId={} queueTicketId={}",
+                    request.appointmentId(), request.patientId(), result.queueTicket().getId());
+            return ResponseEntity.ok(new AppointmentCheckInResponse(
+                    AppointmentView.from(result.appointment()),
+                    QueueController.TicketResponse.from(result.queueTicket())
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Confirm appointment by appointment number and issue queue number",
+            description = "Checks in a scheduled appointment using appointment number only and returns queue ticket."
+    )
+    @PostMapping("/appointments/confirm-by-number")
+    public ResponseEntity<?> confirmAppointmentByNumber(@RequestBody AppointmentNumberConfirmRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+
+            var result = appointmentService.checkInAppointmentByNumberFromKiosk(
+                    request.appointmentNumber(),
+                    request.givenName(),
+                    request.familyName(),
+                    java.time.LocalDate.parse(request.dateOfBirth()),
+                    request.complaint()
+            );
+
+            if (Boolean.TRUE.equals(request.consentForDataAccess())) {
+                patientDataAccessService.recordPatientConsent(result.appointment().getPatientId());
+            }
+
+            log.info("Kiosk appointment confirmed by number appointmentId={} appointmentNumber={} queueTicketId={}",
+                    result.appointment().getId(), result.appointment().getAppointmentNumber(), result.queueTicket().getId());
+
+            return ResponseEntity.ok(new AppointmentCheckInResponse(
+                    AppointmentView.from(result.appointment()),
+                    QueueController.TicketResponse.from(result.queueTicket())
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Public kiosk appointment confirmation",
+            description = "No-auth endpoint for kiosk stations. Confirms appointment by appointment number + name + DOB and issues queue number."
+    )
+    @PostMapping("/public/appointments/confirm-by-number")
+    public ResponseEntity<?> publicConfirmAppointmentByNumber(@RequestBody PublicAppointmentCheckInRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+
+            var result = appointmentService.checkInAppointmentByNumberFromKiosk(
+                    request.appointmentNumber(),
+                    request.givenName(),
+                    request.familyName(),
+                    java.time.LocalDate.parse(request.dateOfBirth()),
+                    request.complaint()
+            );
+
+            return ResponseEntity.ok(new AppointmentCheckInResponse(
+                    AppointmentView.from(result.appointment()),
+                    QueueController.TicketResponse.from(result.queueTicket())
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Public kiosk appointment confirmation by QR token",
+            description = "No-auth endpoint for kiosk stations. Confirms appointment by QR token + name + DOB and issues queue number."
+    )
+    @PostMapping("/public/appointments/confirm-by-qr")
+    public ResponseEntity<?> publicConfirmAppointmentByQr(@RequestBody PublicAppointmentQrCheckInRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            facilityWorkflowConfigService.assertAppointmentFlowEnabled();
+
+            var result = appointmentService.checkInAppointmentByQrFromKiosk(
+                    request.qrToken(),
+                    request.givenName(),
+                    request.familyName(),
+                    java.time.LocalDate.parse(request.dateOfBirth()),
+                    request.complaint()
+            );
+
+            return ResponseEntity.ok(new AppointmentCheckInResponse(
+                    AppointmentView.from(result.appointment()),
+                    QueueController.TicketResponse.from(result.queueTicket())
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Public kiosk no-appointment check-in",
+            description = "No-auth endpoint for kiosk stations. Captures name + DOB + complaint and issues queue number in GENERAL queue."
+    )
+    @PostMapping("/public/queue/checkin")
+    public ResponseEntity<?> publicNoAppointmentCheckIn(@RequestBody PublicNoAppointmentCheckInRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            var patient = patientService.resolveOrRegisterForKioskCheckIn(
+                    request.givenName(),
+                    request.familyName(),
+                    java.time.LocalDate.parse(request.dateOfBirth()),
+                    dalili.com.base.domain.patient.model.Patient.Sex.UNKNOWN
+            );
+
+            QueueTicket ticket = queueService.issueTicket(
+                    patient.getId(),
+                    QueueTicket.QueueCategory.GENERAL,
+                    request.complaint()
+            );
+
+            return ResponseEntity.ok(new CheckInResponse(
+                    patient.getId(),
+                    patient.getMrn(),
+                    patient.getFullName(),
+                    ticket.getId(),
+                    ticket.getTicketNumber(),
+                    ticket.getCategory().getDisplayName(),
+                    ticket.getTriageLevel().getDisplayName(),
+                    ticket.getTargetWaitMinutes(),
+                    false,
+                    "Please proceed to the waiting area. Your number will be called for triage assessment."
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Kiosk no-appointment check-in",
+            description = "Identifies (or auto-registers) a patient by demographics and issues queue number without an appointment."
+    )
+    @PostMapping("/queue/no-appointment-checkin")
+    public ResponseEntity<?> noAppointmentCheckIn(@RequestBody NoAppointmentCheckInRequest request) {
+        try {
+            facilityWorkflowConfigService.assertKioskEnabled();
+            var patient = patientService.resolveOrRegisterForKioskCheckIn(
+                    request.givenName(),
+                    request.familyName(),
+                    java.time.LocalDate.parse(request.dateOfBirth()),
+                    request.sex()
+            );
+            if (Boolean.TRUE.equals(request.consentForDataAccess())) {
+                patientDataAccessService.recordPatientConsent(patient.getId());
+            }
+            QueueTicket ticket = queueService.issueTicket(
+                    patient.getId(),
+                    request.category(),
+                    request.complaint()
+            );
+            log.info("Kiosk no-appointment check-in completed ticketId={} patientId={} category={}",
+                    ticket.getId(), patient.getId(), request.category());
+            return ResponseEntity.ok(new CheckInResponse(
+                    patient.getId(),
+                    patient.getMrn(),
+                    patient.getFullName(),
+                    ticket.getId(),
+                    ticket.getTicketNumber(),
+                    ticket.getCategory().getDisplayName(),
+                    ticket.getTriageLevel().getDisplayName(),
+                    ticket.getTargetWaitMinutes(),
+                    Boolean.TRUE.equals(request.consentForDataAccess()),
+                    "Please proceed to the waiting area. Your number will be called for triage assessment."
             ));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
@@ -333,6 +556,142 @@ public class KioskQueueController {
     ) {
     }
 
+    @Schema(description = "Appointment verification request")
+    public record AppointmentVerificationRequest(
+            @Schema(description = "Patient UUID", required = true)
+            UUID patientId,
+
+            @Schema(description = "Appointment access code received via patient portal/email", example = "483920")
+            String accessCode,
+
+            @Schema(description = "Appointment QR token received via patient portal/email")
+            String qrToken
+    ) {
+    }
+
+    @Schema(description = "Appointment confirmation request")
+    public record AppointmentConfirmRequest(
+            @Schema(description = "Patient UUID", required = true)
+            UUID patientId,
+
+            @Schema(description = "Appointment UUID to confirm", required = true)
+            UUID appointmentId,
+
+            @Schema(description = "Appointment access code")
+            String accessCode,
+
+            @Schema(description = "Appointment QR token")
+            String qrToken,
+
+            @Schema(description = "Optional complaint captured at check-in")
+            String complaint,
+
+            @Schema(description = "Consent flag for same-hospital data access")
+            Boolean consentForDataAccess
+    ) {
+    }
+
+    @Schema(description = "Appointment check-in request by appointment number")
+    public record AppointmentNumberConfirmRequest(
+            @Schema(description = "Appointment number", required = true, example = "PR-001")
+            String appointmentNumber,
+
+            @Schema(description = "Given name", required = true)
+            String givenName,
+
+            @Schema(description = "Family name", required = true)
+            String familyName,
+
+            @Schema(description = "Date of birth (YYYY-MM-DD)", required = true)
+            String dateOfBirth,
+
+            @Schema(description = "Optional complaint captured at check-in")
+            String complaint,
+
+            @Schema(description = "Consent flag for same-hospital data access")
+            Boolean consentForDataAccess
+    ) {
+    }
+
+    @Schema(description = "Public kiosk appointment check-in request")
+    public record PublicAppointmentCheckInRequest(
+            @Schema(description = "Appointment number", required = true, example = "PR-001")
+            String appointmentNumber,
+
+            @Schema(description = "Given name", required = true)
+            String givenName,
+
+            @Schema(description = "Family name", required = true)
+            String familyName,
+
+            @Schema(description = "Date of birth (YYYY-MM-DD)", required = true)
+            String dateOfBirth,
+
+            @Schema(description = "Optional complaint")
+            String complaint
+    ) {
+    }
+
+    @Schema(description = "Public kiosk appointment QR check-in request")
+    public record PublicAppointmentQrCheckInRequest(
+            @Schema(description = "Appointment QR token", required = true)
+            String qrToken,
+
+            @Schema(description = "Given name", required = true)
+            String givenName,
+
+            @Schema(description = "Family name", required = true)
+            String familyName,
+
+            @Schema(description = "Date of birth (YYYY-MM-DD)", required = true)
+            String dateOfBirth,
+
+            @Schema(description = "Optional complaint")
+            String complaint
+    ) {
+    }
+
+    @Schema(description = "Public kiosk no-appointment check-in request")
+    public record PublicNoAppointmentCheckInRequest(
+            @Schema(description = "Given name", required = true)
+            String givenName,
+
+            @Schema(description = "Family name", required = true)
+            String familyName,
+
+            @Schema(description = "Date of birth (YYYY-MM-DD)", required = true)
+            String dateOfBirth,
+
+            @Schema(description = "Optional complaint")
+            String complaint
+    ) {
+    }
+
+    @Schema(description = "No-appointment kiosk check-in request")
+    public record NoAppointmentCheckInRequest(
+            @Schema(description = "Given name", required = true)
+            String givenName,
+
+            @Schema(description = "Family name", required = true)
+            String familyName,
+
+            @Schema(description = "Date of birth (YYYY-MM-DD)", required = true)
+            String dateOfBirth,
+
+            @Schema(description = "Patient sex", required = true)
+            dalili.com.base.domain.patient.model.Patient.Sex sex,
+
+            @Schema(description = "Queue category", required = true)
+            QueueTicket.QueueCategory category,
+
+            @Schema(description = "Optional complaint")
+            String complaint,
+
+            @Schema(description = "Consent flag for same-hospital data access")
+            Boolean consentForDataAccess
+    ) {
+    }
+
     @Schema(description = "Appointment check-in response")
     public record AppointmentCheckInResponse(
             AppointmentView appointment,
@@ -343,26 +702,38 @@ public class KioskQueueController {
     @Schema(description = "Appointment summary")
     public record AppointmentView(
             UUID id,
+            String appointmentNumber,
             String status,
             String scheduledAt,
             String checkInWindowOpensAt,
             String checkInWindowClosesAt,
             boolean checkInEligibleNow,
+            String kioskAccessCode,
+            String kioskQrToken,
             String clinicianName,
             String clinicianEmployeeId,
-            String departmentName
+            String departmentName,
+            String facilityCode,
+            String facilityName,
+            String reason
     ) {
         static AppointmentView from(Appointment appointment) {
             return new AppointmentView(
                     appointment.getId(),
+                    appointment.getAppointmentNumber(),
                     appointment.getStatus() != null ? appointment.getStatus().name() : null,
                     appointment.getScheduledAt() != null ? appointment.getScheduledAt().toString() : null,
                     appointment.getCheckInWindowOpensAt() != null ? appointment.getCheckInWindowOpensAt().toString() : null,
                     appointment.getCheckInWindowClosesAt() != null ? appointment.getCheckInWindowClosesAt().toString() : null,
                     appointment.canCheckInAt(Instant.now()),
+                    appointment.getKioskAccessCode(),
+                    appointment.getKioskQrToken(),
                     appointment.getClinicianName(),
                     appointment.getClinicianEmployeeId(),
-                    appointment.getDepartmentName()
+                    appointment.getDepartmentName(),
+                    appointment.getFacilityCode(),
+                    appointment.getFacilityName(),
+                    appointment.getReason()
             );
         }
     }

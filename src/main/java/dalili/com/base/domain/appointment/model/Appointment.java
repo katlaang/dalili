@@ -3,6 +3,7 @@ package dalili.com.base.domain.appointment.model;
 import jakarta.persistence.*;
 import lombok.Getter;
 
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -14,10 +15,13 @@ import java.util.UUID;
         @Index(name = "idx_appointment_patient", columnList = "patientId"),
         @Index(name = "idx_appointment_status", columnList = "status"),
         @Index(name = "idx_appointment_scheduled", columnList = "scheduledAt"),
-        @Index(name = "idx_appointment_window_close", columnList = "checkInWindowClosesAt")
+        @Index(name = "idx_appointment_window_close", columnList = "checkInWindowClosesAt"),
+        @Index(name = "idx_appointment_number", columnList = "appointmentNumber")
 })
 @Getter
 public class Appointment {
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     @Id
     @GeneratedValue
@@ -41,6 +45,15 @@ public class Appointment {
     @Column(length = 255)
     private String departmentName;
 
+    @Column(length = 80)
+    private String facilityCode;
+
+    @Column(length = 255)
+    private String facilityName;
+
+    @Column(length = 500)
+    private String reason;
+
     @Column(nullable = false)
     private Instant scheduledAt;
 
@@ -62,6 +75,12 @@ public class Appointment {
 
     @Column
     private UUID queueTicketId;
+
+    @Column(length = 40, unique = true)
+    private String appointmentNumber;
+
+    @Column
+    private Integer appointmentNumberSequence;
 
     @Column
     private UUID triageAssessmentId;
@@ -86,6 +105,12 @@ public class Appointment {
 
     @Column(nullable = false, length = 120)
     private String updatedBy;
+
+    @Column(length = 20)
+    private String kioskAccessCode;
+
+    @Column(length = 120)
+    private String kioskQrToken;
 
     protected Appointment() {
     }
@@ -122,6 +147,8 @@ public class Appointment {
         appointment.createdBy = actor;
         appointment.updatedAt = appointment.createdAt;
         appointment.updatedBy = actor;
+        appointment.kioskAccessCode = generateKioskAccessCode();
+        appointment.kioskQrToken = UUID.randomUUID().toString();
         return appointment;
     }
 
@@ -153,9 +180,31 @@ public class Appointment {
         this.clinicianEmployeeId = normalize(clinicianEmployeeId, 120);
     }
 
+    private static String generateKioskAccessCode() {
+        int number = 100000 + SECURE_RANDOM.nextInt(900000);
+        return String.valueOf(number);
+    }
+
     public void setDepartment(String departmentCode, String departmentName) {
         this.departmentCode = normalize(departmentCode, 120);
         this.departmentName = normalize(departmentName, 255);
+    }
+
+    public void assignAppointmentNumber(String appointmentNumber, int appointmentNumberSequence) {
+        String normalized = normalize(appointmentNumber, 40);
+        if (normalized == null) {
+            throw new IllegalArgumentException("appointmentNumber is required");
+        }
+        if (appointmentNumberSequence < 1) {
+            throw new IllegalArgumentException("appointmentNumberSequence must be >= 1");
+        }
+        this.appointmentNumber = normalized;
+        this.appointmentNumberSequence = appointmentNumberSequence;
+    }
+
+    public void setFacility(String facilityCode, String facilityName) {
+        this.facilityCode = normalize(facilityCode, 80);
+        this.facilityName = normalize(facilityName, 255);
     }
 
     public void checkIn(UUID queueTicketId, String actor) {
@@ -220,10 +269,29 @@ public class Appointment {
         return !now.isBefore(this.checkInWindowOpensAt) && !now.isAfter(this.checkInWindowClosesAt);
     }
 
+    public void setReason(String reason) {
+        this.reason = normalize(reason, 500);
+    }
+
     public boolean missedCheckInWindow(Instant now) {
         return this.status == AppointmentStatus.SCHEDULED
                 && now != null
                 && now.isAfter(this.checkInWindowClosesAt);
+    }
+
+    public boolean matchesKioskCredential(String accessCode, String qrToken) {
+        String normalizedCode = normalize(accessCode, 20);
+        String normalizedQr = normalize(qrToken, 120);
+
+        boolean codeMatch = normalizedCode != null
+                && this.kioskAccessCode != null
+                && this.kioskAccessCode.equalsIgnoreCase(normalizedCode);
+
+        boolean qrMatch = normalizedQr != null
+                && this.kioskQrToken != null
+                && this.kioskQrToken.equals(normalizedQr);
+
+        return codeMatch || qrMatch;
     }
 
     private void touch(String actor) {

@@ -3,6 +3,7 @@ package dalili.com.base.infra.audit;
 import dalili.com.base.ambient.session.SessionContext;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -51,11 +52,18 @@ public class AuditService {
                     .map(AuditEvent::getHash)
                     .orElse(null);
 
+            UUID resolvedSessionId = sessionContext.sessionId() != null
+                    ? sessionContext.sessionId()
+                    : UUID.nameUUIDFromBytes(("ANON-KIOSK-" + deviceContext.deviceId()).getBytes(StandardCharsets.UTF_8));
+            String resolvedActor = sessionContext.physicianId() != null
+                    ? sessionContext.physicianId()
+                    : "ANON_KIOSK";
+
             String hash = AuditHashUtil.compute(
                     timestamp,
                     eventType,
-                    sessionContext.sessionId(),
-                    sessionContext.physicianId(),
+                    resolvedSessionId,
+                    resolvedActor,
                     patientId,
                     deviceContext.deviceId(),
                     details,
@@ -65,8 +73,8 @@ public class AuditService {
             AuditEvent event = new AuditEvent(
                     timestamp,
                     eventType,
-                    sessionContext.sessionId(),
-                    sessionContext.physicianId(),
+                    resolvedSessionId,
+                    resolvedActor,
                     patientId,
                     deviceContext.deviceId(),
                     details,

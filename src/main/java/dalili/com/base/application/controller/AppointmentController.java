@@ -1,8 +1,12 @@
 package dalili.com.base.application.controller;
 
+import dalili.com.base.ambient.session.SessionContext;
 import dalili.com.base.application.service.AppointmentService;
+import dalili.com.base.application.service.FacilityWorkflowConfigService;
 import dalili.com.base.application.service.PatientDataAccessService;
+import dalili.com.base.application.service.PatientService;
 import dalili.com.base.domain.appointment.model.Appointment;
+import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.interfaces.security.AuditGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,21 +27,72 @@ public class AppointmentController {
     private static final Logger log = LoggerFactory.getLogger(AppointmentController.class);
 
     private final AppointmentService appointmentService;
+    private final PatientService patientService;
     private final PatientDataAccessService patientDataAccessService;
+    private final FacilityWorkflowConfigService facilityWorkflowConfigService;
     private final AuditGuard auditGuard;
+    private final SessionContext sessionContext;
 
     public AppointmentController(
             AppointmentService appointmentService,
+            PatientService patientService,
             PatientDataAccessService patientDataAccessService,
-            AuditGuard auditGuard
+            FacilityWorkflowConfigService facilityWorkflowConfigService,
+            AuditGuard auditGuard,
+            SessionContext sessionContext
     ) {
         this.appointmentService = appointmentService;
+        this.patientService = patientService;
         this.patientDataAccessService = patientDataAccessService;
+        this.facilityWorkflowConfigService = facilityWorkflowConfigService;
         this.auditGuard = auditGuard;
+        this.sessionContext = sessionContext;
     }
 
     private static String formatInstant(Instant value) {
         return value != null ? value.toString() : null;
+    }
+
+    private AppointmentView toView(Appointment appointment) {
+        String patientName = null;
+        try {
+            patientName = patientService.findById(appointment.getPatientId()).getFullName();
+        } catch (RuntimeException ignored) {
+            // Keep response resilient even if patient lookup fails for historical records.
+        }
+
+        String facilityCode = appointment.getFacilityCode();
+        String facilityName = appointment.getFacilityName();
+        if ((facilityCode == null || facilityCode.isBlank()) || (facilityName == null || facilityName.isBlank())) {
+            var config = facilityWorkflowConfigService.getCurrentConfig();
+            if (facilityCode == null || facilityCode.isBlank()) {
+                facilityCode = config.getFacilityCode();
+            }
+            if (facilityName == null || facilityName.isBlank()) {
+                facilityName = config.getFacilityName();
+            }
+        }
+
+        return new AppointmentView(
+                appointment.getId(),
+                appointment.getAppointmentNumber(),
+                appointment.getPatientId(),
+                patientName,
+                appointment.getStatus() != null ? appointment.getStatus().name() : null,
+                formatInstant(appointment.getScheduledAt()),
+                formatInstant(appointment.getCheckInWindowOpensAt()),
+                formatInstant(appointment.getCheckInWindowClosesAt()),
+                appointment.canCheckInAt(Instant.now()),
+                appointment.getClinicianName(),
+                appointment.getClinicianEmployeeId(),
+                appointment.getDepartmentName(),
+                facilityCode,
+                facilityName,
+                appointment.getReason(),
+                formatInstant(appointment.getCheckedInAt()),
+                appointment.getQueueTicketId(),
+                appointment.getDeactivationReason()
+        );
     }
 
     @PostMapping("/schedule")
@@ -52,10 +107,11 @@ public class AppointmentController {
                     request.clinicianName(),
                     request.clinicianEmployeeId(),
                     request.departmentCode(),
-                    request.departmentName()
+                    request.departmentName(),
+                    request.reason()
             ));
             log.info("Appointment scheduled via API appointmentId={} patientId={}", appointment.getId(), appointment.getPatientId());
-            return ResponseEntity.ok(AppointmentView.from(appointment));
+            return ResponseEntity.ok(toView(appointment));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
@@ -66,7 +122,7 @@ public class AppointmentController {
         try {
             auditGuard.assertSessionActive();
             List<AppointmentView> appointments = appointmentService.getTodayAppointments().stream()
-                    .map(AppointmentView::from)
+                    .map(this::toView)
                     .toList();
             return ResponseEntity.ok(appointments);
         } catch (RuntimeException e) {
@@ -79,7 +135,7 @@ public class AppointmentController {
         try {
             auditGuard.assertSessionActive();
             List<AppointmentView> pending = appointmentService.getPatientPendingAppointments(patientId).stream()
-                    .map(AppointmentView::from)
+                    .map(this::toView)
                     .toList();
             return ResponseEntity.ok(pending);
         } catch (RuntimeException e) {
@@ -111,7 +167,7 @@ public class AppointmentController {
                     appointmentId, request.patientId());
 
             return ResponseEntity.ok(new CheckInResponse(
-                    AppointmentView.from(result.appointment()),
+                    toView(result.appointment()),
                     QueueController.TicketResponse.from(result.queueTicket())
             ));
         } catch (RuntimeException e) {
@@ -131,7 +187,24 @@ public class AppointmentController {
                     request != null ? request.reason() : null
             );
             log.info("Appointment cancelled via API appointmentId={} patientId={}", appointmentId, appointment.getPatientId());
-            return ResponseEntity.ok(AppointmentView.from(appointment));
+            return ResponseEntity.ok(toView(appointment));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/assigned/pending")
+    public ResponseEntity<?> getAssignedPendingAppointments() {
+        try {
+            auditGuard.assertSessionActive();
+            Role role = sessionContext.role();
+            if (role != Role.PHYSICIAN && role != Role.NURSE && role != Role.ADMIN && role != Role.SUPER_ADMIN) {
+                return ResponseEntity.badRequest().body(new ErrorResponse("Current role cannot view assigned appointments"));
+            }
+            List<AppointmentView> assigned = appointmentService.getAssignedPendingAppointmentsForCurrentClinician().stream()
+                    .map(this::toView)
+                    .toList();
+            return ResponseEntity.ok(assigned);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
         }
@@ -145,7 +218,8 @@ public class AppointmentController {
             String clinicianName,
             String clinicianEmployeeId,
             String departmentCode,
-            String departmentName
+            String departmentName,
+            String reason
     ) {
     }
 
@@ -167,7 +241,9 @@ public class AppointmentController {
 
     public record AppointmentView(
             UUID id,
+            String appointmentNumber,
             UUID patientId,
+            String patientName,
             String status,
             String scheduledAt,
             String checkInWindowOpensAt,
@@ -176,27 +252,13 @@ public class AppointmentController {
             String clinicianName,
             String clinicianEmployeeId,
             String departmentName,
+            String facilityCode,
+            String facilityName,
+            String reason,
             String checkedInAt,
             UUID queueTicketId,
             String deactivationReason
     ) {
-        static AppointmentView from(Appointment appointment) {
-            return new AppointmentView(
-                    appointment.getId(),
-                    appointment.getPatientId(),
-                    appointment.getStatus() != null ? appointment.getStatus().name() : null,
-                    formatInstant(appointment.getScheduledAt()),
-                    formatInstant(appointment.getCheckInWindowOpensAt()),
-                    formatInstant(appointment.getCheckInWindowClosesAt()),
-                    appointment.canCheckInAt(Instant.now()),
-                    appointment.getClinicianName(),
-                    appointment.getClinicianEmployeeId(),
-                    appointment.getDepartmentName(),
-                    formatInstant(appointment.getCheckedInAt()),
-                    appointment.getQueueTicketId(),
-                    appointment.getDeactivationReason()
-            );
-        }
     }
 
     public record ErrorResponse(String error) {

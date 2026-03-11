@@ -7,11 +7,14 @@ import dalili.com.base.domain.user.repository.UserRepository;
 import dalili.com.base.interfaces.security.jwt.JwtService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -24,19 +27,34 @@ public class AuthService {
     private final JwtService jwtService;
     private final SessionActivityService sessionActivityService;
     private final PatientService patientService;
+    private final String clinicName;
+    private final boolean kioskAutoProvisionDefault;
+    private final String defaultKioskDeviceId;
+    private final String defaultKioskDeviceSecret;
+    private final String defaultKioskLocationDescription;
 
     public AuthService(
             UserRepository userRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
             SessionActivityService sessionActivityService,
-            PatientService patientService
+            PatientService patientService,
+            @Value("${dalili.clinic.name:Dalili Health Clinic}") String clinicName,
+            @Value("${dalili.kiosk.auto-provision-default:true}") boolean kioskAutoProvisionDefault,
+            @Value("${dalili.kiosk.default-device-id:kiosk-front-desk-1}") String defaultKioskDeviceId,
+            @Value("${dalili.kiosk.default-device-secret:kiosk-secret-change-me}") String defaultKioskDeviceSecret,
+            @Value("${dalili.kiosk.default-location-description:Front Desk 1}") String defaultKioskLocationDescription
     ) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.sessionActivityService = sessionActivityService;
         this.patientService = patientService;
+        this.clinicName = clinicName;
+        this.kioskAutoProvisionDefault = kioskAutoProvisionDefault;
+        this.defaultKioskDeviceId = defaultKioskDeviceId;
+        this.defaultKioskDeviceSecret = defaultKioskDeviceSecret;
+        this.defaultKioskLocationDescription = defaultKioskLocationDescription;
     }
 
     /**
@@ -83,6 +101,34 @@ public class AuthService {
 
         sessionActivityService.touch(result.sessionId(), user.getId(), user.getActorType());
         log.info("Patient authenticated patientId={}", user.getPatientId());
+
+        return result.token();
+    }
+
+    /**
+     * Kiosk device login (device identity only, no patient context).
+     */
+    public String loginKioskDevice(String deviceId, String deviceSecret) {
+        User kiosk = userRepository.findByUsernameAndActiveTrue(deviceId)
+                .orElseGet(() -> autoProvisionDefaultKioskForLogin(deviceId, deviceSecret));
+
+        if (kiosk == null) {
+            throw new AuthenticationException("Unknown kiosk device");
+        }
+
+        if (!kiosk.isKiosk()) {
+            throw new AuthenticationException("Invalid device");
+        }
+
+        if (!passwordEncoder.matches(deviceSecret, kiosk.getPasswordHash())) {
+            throw new AuthenticationException("Invalid credentials");
+        }
+
+        JwtService.TokenResult result = jwtService.generateKioskToken(
+                kiosk.getId(), kiosk.getUsername(), null);
+
+        sessionActivityService.touch(result.sessionId(), kiosk.getId(), kiosk.getActorType());
+        log.info("Kiosk device authenticated kioskUserId={}", kiosk.getId());
 
         return result.token();
     }
@@ -142,7 +188,7 @@ public class AuthService {
      * Register staff user
      */
     public User registerStaff(String username, String password, String fullName, Role role) {
-        if (role == Role.PATIENT || role == Role.KIOSK || role == Role.SYSTEM) {
+        if (role == Role.PATIENT || role == Role.KIOSK || role == Role.SYSTEM || role == Role.ADMIN || role == Role.SUPER_ADMIN) {
             throw new AuthenticationException("Invalid role for staff registration");
         }
 
@@ -153,6 +199,38 @@ public class AuthService {
         User user = User.createStaff(username, passwordEncoder.encode(password), fullName, role);
         User saved = userRepository.save(user);
         log.info("Staff user registered userId={} role={}", saved.getId(), saved.getRole());
+        return saved;
+    }
+
+    /**
+     * Bootstrap the first super admin account.
+     * This flow is intended for initial system setup only.
+     */
+    public User bootstrapFirstSuperAdmin(String fullName, String password, String company) {
+        validateAdminRegistrationInput(fullName, password, company);
+
+        if (userRepository.countByRoleAndActiveTrue(Role.SUPER_ADMIN) > 0) {
+            throw new AuthenticationException("Super admin already exists");
+        }
+
+        String username = generateUniqueUsername("super-admin", fullName);
+        User user = User.createStaff(username, passwordEncoder.encode(password), fullName.trim(), Role.SUPER_ADMIN);
+        User saved = userRepository.save(user);
+        log.info("Initial super admin bootstrapped userId={} username={}", saved.getId(), saved.getUsername());
+        return saved;
+    }
+
+    /**
+     * Register a new admin account.
+     * Access control for this method is enforced at controller/security level.
+     */
+    public User registerAdmin(String fullName, String password, String company) {
+        validateAdminRegistrationInput(fullName, password, company);
+
+        String username = generateUniqueUsername("admin", fullName);
+        User user = User.createStaff(username, passwordEncoder.encode(password), fullName.trim(), Role.ADMIN);
+        User saved = userRepository.save(user);
+        log.info("Admin account registered userId={} username={}", saved.getId(), saved.getUsername());
         return saved;
     }
 
@@ -199,6 +277,23 @@ public class AuthService {
         log.info("Session logout completed sessionId={}", sessionId);
     }
 
+    private void validateAdminRegistrationInput(String fullName, String password, String company) {
+        if (isBlank(fullName) || fullName.trim().length() < 2) {
+            throw new AuthenticationException("Name is required");
+        }
+        if (isBlank(password) || password.length() < 8) {
+            throw new AuthenticationException("Password must be at least 8 characters");
+        }
+        if (isBlank(company)) {
+            throw new AuthenticationException("Company is required");
+        }
+
+        String expectedCompany = clinicName == null ? "" : clinicName.trim();
+        if (!expectedCompany.equalsIgnoreCase(company.trim())) {
+            throw new AuthenticationException("Company does not match this deployment");
+        }
+    }
+
     private LocalDate parseDateOfBirth(String dobString) {
         try {
             if (dobString.length() == 8 && !dobString.contains("-")) {
@@ -219,6 +314,57 @@ public class AuthService {
             throw new AuthenticationException("Invalid device");
         }
         return kiosk;
+    }
+
+    private User autoProvisionDefaultKioskForLogin(String deviceId, String deviceSecret) {
+        if (!kioskAutoProvisionDefault) {
+            return null;
+        }
+        if (isBlank(defaultKioskDeviceId) || isBlank(defaultKioskDeviceSecret)) {
+            return null;
+        }
+        if (!defaultKioskDeviceId.equals(deviceId) || !defaultKioskDeviceSecret.equals(deviceSecret)) {
+            return null;
+        }
+
+        try {
+            User kiosk = User.createKiosk(
+                    defaultKioskDeviceId,
+                    passwordEncoder.encode(defaultKioskDeviceSecret),
+                    isBlank(defaultKioskLocationDescription) ? "Front Desk 1" : defaultKioskLocationDescription.trim()
+            );
+            User saved = userRepository.save(kiosk);
+            log.info("Default kiosk auto-provisioned during login deviceId={}", defaultKioskDeviceId);
+            return saved;
+        } catch (DataIntegrityViolationException collision) {
+            return userRepository.findByUsernameAndActiveTrue(defaultKioskDeviceId).orElse(null);
+        }
+    }
+
+    private String generateUniqueUsername(String prefix, String fullName) {
+        String normalized = fullName == null ? "" : fullName.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+", "")
+                .replaceAll("-+$", "");
+
+        if (normalized.isBlank()) {
+            normalized = "user";
+        }
+
+        String base = prefix + "-" + normalized;
+        String candidate = base;
+        int counter = 2;
+
+        while (userRepository.findByUsername(candidate).isPresent()) {
+            candidate = base + "-" + counter;
+            counter++;
+        }
+
+        return candidate;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     public static class AuthenticationException extends RuntimeException {

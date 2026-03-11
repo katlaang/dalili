@@ -63,7 +63,7 @@ public class SecurityConfig {
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
             SessionPresenceFilter sessionPresenceFilter,
-            @Value("${dalili.security.allowed-origins:http://localhost:19006,http://localhost:8081,http://localhost:3000}") String allowedOrigins
+            @Value("${dalili.security.allowed-origins:http://localhost:*,http://127.0.0.1:*,http://192.168.*:*,http://10.*:*}") String allowedOrigins
     ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.sessionPresenceFilter = sessionPresenceFilter;
@@ -107,9 +107,10 @@ public class SecurityConfig {
                                 // Authentication endpoints
                                 .requestMatchers("/api/auth/staff/login").permitAll()
                                 .requestMatchers("/api/auth/patient/login").permitAll()
+                                .requestMatchers("/api/auth/kiosk/login").permitAll()
                                 .requestMatchers("/api/auth/kiosk/checkin").permitAll()
                                 .requestMatchers("/api/auth/kiosk/identify").permitAll()
-                                .requestMatchers("/api/auth/staff/register").permitAll()
+                                .requestMatchers("/api/auth/super-admin/bootstrap").permitAll()
                                 .requestMatchers("/api/auth/patient/register").permitAll()
 
                                 // Swagger/OpenAPI documentation
@@ -133,6 +134,8 @@ public class SecurityConfig {
 
                                 // Admin-only operations
                                 .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                                .requestMatchers("/api/auth/admin/register").hasRole("SUPER_ADMIN")
+                                .requestMatchers("/api/auth/staff/register").hasAnyRole("ADMIN", "SUPER_ADMIN")
                                 .requestMatchers("/api/auth/kiosk/register").hasAnyRole("ADMIN", "SUPER_ADMIN")
                                 .requestMatchers(HttpMethod.PUT, "/api/facility/workflow-config").hasRole("SUPER_ADMIN")
                                 .requestMatchers(HttpMethod.GET, "/api/facility/workflow-config")
@@ -215,15 +218,22 @@ public class SecurityConfig {
                                 // ==================== KIOSK ENDPOINTS ====================
 
                                 // Kiosk-specific operations
+                                .requestMatchers("/api/kiosk/public/**").permitAll()
                                 .requestMatchers("/api/kiosk/**").hasRole("KIOSK")
 
                                 // ==================== PATIENT PORTAL ====================
 
-                                // Patient self-service
-                                .requestMatchers("/api/patient/portal/**").hasRole("PATIENT")
-                                .requestMatchers("/api/patient/messages/**").hasRole("PATIENT")
-                                .requestMatchers("/api/patient/appointments/**").hasRole("PATIENT")
-                                .requestMatchers("/api/patient/prescriptions/**").hasRole("PATIENT")
+                                // Patient self-service (restricted to results + appointment confirmation)
+                                .requestMatchers(HttpMethod.GET, "/api/patient/portal/labs").hasRole("PATIENT")
+                                .requestMatchers(HttpMethod.GET, "/api/patient/portal/referrals").hasRole("PATIENT")
+                                .requestMatchers(HttpMethod.GET, "/api/patient/portal/notes").hasRole("PATIENT")
+                                .requestMatchers(HttpMethod.GET, "/api/patient/appointments/pending").hasRole("PATIENT")
+                                .requestMatchers(HttpMethod.GET, "/api/patient/appointments/history").hasRole("PATIENT")
+                                .requestMatchers(HttpMethod.POST, "/api/patient/appointments/*/checkin").hasRole("PATIENT")
+                                .requestMatchers("/api/patient/portal/**").denyAll()
+                                .requestMatchers("/api/patient/messages/**").denyAll()
+                                .requestMatchers("/api/patient/appointments/**").denyAll()
+                                .requestMatchers("/api/patient/prescriptions/**").denyAll()
 
                                 // ==================== AUDIT ENDPOINTS ====================
 
@@ -282,7 +292,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(allowedOrigins);
+        configuration.setAllowedOriginPatterns(allowedOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "Origin"));
         configuration.setExposedHeaders(List.of("Authorization"));

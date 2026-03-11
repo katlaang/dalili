@@ -59,6 +59,18 @@ public class AuthController {
         }
     }
 
+    @PostMapping("/kiosk/login")
+    public ResponseEntity<LoginResponse> loginKioskDevice(@RequestBody KioskLoginRequest request) {
+        try {
+            String token = authService.loginKioskDevice(request.deviceId(), request.deviceSecret());
+            log.info("Kiosk device login success deviceId={}", request.deviceId());
+            return ResponseEntity.ok(new LoginResponse(token, "Login successful", Role.KIOSK.name()));
+        } catch (AuthService.AuthenticationException e) {
+            log.warn("Kiosk device login failed deviceId={} reason={}", request.deviceId(), e.getMessage());
+            return ResponseEntity.status(401).body(new LoginResponse(null, e.getMessage(), null));
+        }
+    }
+
     @PostMapping("/kiosk/checkin")
     public ResponseEntity<LoginResponse> kioskCheckIn(@RequestBody KioskCheckInRequest request) {
         try {
@@ -149,6 +161,40 @@ public class AuthController {
         }
     }
 
+    @PostMapping("/super-admin/bootstrap")
+    public ResponseEntity<AccountRegistrationResponse> bootstrapSuperAdmin(
+            @RequestBody SuperAdminBootstrapRequest request
+    ) {
+        try {
+            User user = authService.bootstrapFirstSuperAdmin(
+                    request.fullName(),
+                    request.password(),
+                    request.company()
+            );
+            return ResponseEntity.ok(
+                    new AccountRegistrationResponse(user.getId().toString(), user.getUsername(), "Super admin created")
+            );
+        } catch (AuthService.AuthenticationException e) {
+            return ResponseEntity.badRequest().body(new AccountRegistrationResponse(null, null, e.getMessage()));
+        }
+    }
+
+    @PostMapping("/admin/register")
+    public ResponseEntity<AccountRegistrationResponse> registerAdmin(@RequestBody AdminRegisterRequest request) {
+        try {
+            User user = authService.registerAdmin(
+                    request.fullName(),
+                    request.password(),
+                    request.company()
+            );
+            return ResponseEntity.ok(
+                    new AccountRegistrationResponse(user.getId().toString(), user.getUsername(), "Admin registered")
+            );
+        } catch (AuthService.AuthenticationException e) {
+            return ResponseEntity.badRequest().body(new AccountRegistrationResponse(null, null, e.getMessage()));
+        }
+    }
+
     // ==================== DTOs ====================
 
     record LoginRequest(String username, String password) {
@@ -161,6 +207,9 @@ public class AuthController {
     }
 
     record KioskCheckInRequest(String kioskDeviceId, String mrn, String dateOfBirth) {
+    }
+
+    record KioskLoginRequest(String deviceId, String deviceSecret) {
     }
 
     record KioskIdentifyRequest(
@@ -179,6 +228,15 @@ public class AuthController {
     }
 
     record KioskRegisterRequest(String deviceId, String deviceSecret, String locationDescription) {
+    }
+
+    record SuperAdminBootstrapRequest(String fullName, String password, String company) {
+    }
+
+    record AdminRegisterRequest(String fullName, String password, String company) {
+    }
+
+    record AccountRegistrationResponse(String userId, String username, String message) {
     }
 
     record RegisterResponse(String userId, String message) {

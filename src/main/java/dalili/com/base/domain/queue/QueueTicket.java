@@ -62,7 +62,7 @@ public class QueueTicket {
     private LocalDate queueDate;
 
     /**
-     * Human-readable ticket number (e.g., "A-001", "E-015").
+     * Human-readable ticket number (e.g., "WK-001", "PR-015").
      */
     @Column(nullable = false)
     private String ticketNumber;
@@ -357,7 +357,7 @@ public class QueueTicket {
      * after the nurse performs the triage assessment.</p>
      *
      * @param patientId        the patient's UUID
-     * @param ticketNumber     the formatted ticket number (e.g., "A-001")
+     * @param ticketNumber     the formatted ticket number (e.g., "WK-001")
      * @param category         the queue category
      * @param priorityModifier any initial priority modifiers (e.g., PEDIATRIC based on age)
      * @param initialComplaint brief complaint from kiosk/reception
@@ -887,35 +887,35 @@ public class QueueTicket {
         /**
          * General outpatient services
          */
-        GENERAL("A", "General"),
+        GENERAL("WK", "General"),
         /**
          * Emergency department
          */
-        EMERGENCY("E", "Emergency"),
+        EMERGENCY("EM", "Emergency"),
         /**
          * Maternal and obstetric services
          */
-        MATERNAL("M", "Maternal"),
+        MATERNAL("MT", "Maternal"),
         /**
          * Pediatric services (children)
          */
-        PEDIATRIC("P", "Pediatric"),
+        PEDIATRIC("PD", "Pediatric"),
         /**
          * Follow-up appointments
          */
-        FOLLOW_UP("F", "Follow-up"),
+        FOLLOW_UP("PR", "Follow-up"),
         /**
          * Laboratory services
          */
-        LABORATORY("L", "Laboratory"),
+        LABORATORY("LB", "Laboratory"),
         /**
          * Pharmacy pickup
          */
-        PHARMACY("R", "Pharmacy"),
+        PHARMACY("PH", "Pharmacy"),
         /**
          * Radiology/imaging
          */
-        RADIOLOGY("X", "Radiology");
+        RADIOLOGY("RD", "Radiology");
 
         private final String prefix;
         private final String displayName;

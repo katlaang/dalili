@@ -141,14 +141,13 @@ public interface QueueTicketRepository extends JpaRepository<QueueTicket, UUID> 
      * numeric portion after the category prefix (e.g., "001" from "A-001").</p>
      *
      * @param queueDate the date to query
-     * @param category  the category to filter by
      * @return the highest ticket sequence number, or empty if none exist
      */
-    @Query("SELECT MAX(CAST(SUBSTRING(q.ticketNumber, 3) AS int)) FROM QueueTicket q " +
-            "WHERE q.queueDate = :queueDate AND q.category = :category")
-    Optional<Integer> findMaxTicketNumberForDateAndCategory(
+    @Query("SELECT MAX(CAST(SUBSTRING(q.ticketNumber, LENGTH(:prefix) + 2) AS int)) FROM QueueTicket q " +
+            "WHERE q.queueDate = :queueDate AND q.ticketNumber LIKE CONCAT(:prefix, '-%')")
+    Optional<Integer> findMaxTicketNumberForDateAndPrefix(
             LocalDate queueDate,
-            QueueTicket.QueueCategory category
+            String prefix
     );
 
     // ==================== STATISTICS ====================

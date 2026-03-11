@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -30,6 +32,7 @@ public class AppointmentService {
     private final AppointmentRepository appointmentRepository;
     private final QueueService queueService;
     private final QueueTicketRepository queueTicketRepository;
+    private final PatientService patientService;
     private final FacilityWorkflowConfigService facilityConfigService;
     private final AuditService auditService;
     private final AuditGuard auditGuard;
@@ -39,6 +42,7 @@ public class AppointmentService {
             AppointmentRepository appointmentRepository,
             QueueService queueService,
             QueueTicketRepository queueTicketRepository,
+            PatientService patientService,
             FacilityWorkflowConfigService facilityConfigService,
             AuditService auditService,
             AuditGuard auditGuard,
@@ -47,6 +51,7 @@ public class AppointmentService {
         this.appointmentRepository = appointmentRepository;
         this.queueService = queueService;
         this.queueTicketRepository = queueTicketRepository;
+        this.patientService = patientService;
         this.facilityConfigService = facilityConfigService;
         this.auditService = auditService;
         this.auditGuard = auditGuard;
@@ -64,7 +69,8 @@ public class AppointmentService {
         }
 
         String actor = actor();
-        int windowMinutes = facilityConfigService.getAppointmentCheckInWindowMinutes();
+        var workflowConfig = facilityConfigService.getCurrentConfig();
+        int windowMinutes = workflowConfig.getAppointmentCheckInWindowMinutes();
         Appointment appointment = Appointment.schedule(
                 input.patientId(),
                 input.scheduledAt(),
@@ -72,8 +78,14 @@ public class AppointmentService {
                 windowMinutes,
                 actor
         );
+        int sequence = appointmentRepository.findMaxAppointmentNumberSequence()
+                .map(previous -> previous + 1)
+                .orElse(1);
+        appointment.assignAppointmentNumber(String.format("PR-%03d", sequence), sequence);
         appointment.assignClinician(input.clinicianId(), input.clinicianName(), input.clinicianEmployeeId());
         appointment.setDepartment(input.departmentCode(), input.departmentName());
+        appointment.setFacility(workflowConfig.getFacilityCode(), workflowConfig.getFacilityName());
+        appointment.setReason(input.reason());
 
         appointment = appointmentRepository.save(appointment);
         log.info("Appointment scheduled appointmentId={} patientId={} scheduledAt={}",
@@ -91,22 +103,67 @@ public class AppointmentService {
     public List<Appointment> getPatientPendingAppointments(UUID patientId) {
         auditGuard.assertSessionActive();
         facilityConfigService.assertAppointmentFlowEnabled();
-        return appointmentRepository.findByPatientIdAndStatusInOrderByScheduledAtAsc(
-                patientId,
-                List.of(
-                        Appointment.AppointmentStatus.SCHEDULED,
-                        Appointment.AppointmentStatus.CHECKED_IN,
-                        Appointment.AppointmentStatus.IN_TRIAGE,
-                        Appointment.AppointmentStatus.IN_QUEUE,
-                        Appointment.AppointmentStatus.IN_PROGRESS
-                )
-        );
+        return appointmentRepository.findByPatientIdAndStatusInOrderByScheduledAtAsc(patientId, pendingStatuses());
     }
 
     public List<Appointment> getPatientAppointmentHistory(UUID patientId) {
         auditGuard.assertSessionActive();
         facilityConfigService.assertAppointmentFlowEnabled();
         return appointmentRepository.findByPatientIdOrderByScheduledAtDesc(patientId);
+    }
+
+    public List<Appointment> getAssignedPendingAppointmentsForCurrentClinician() {
+        auditGuard.assertSessionActive();
+        facilityConfigService.assertAppointmentFlowEnabled();
+
+        Role role = sessionContext.role();
+        if (role != Role.PHYSICIAN && role != Role.NURSE && role != Role.ADMIN && role != Role.SUPER_ADMIN) {
+            throw new AppointmentException("Current role cannot view assigned appointments");
+        }
+
+        List<Appointment> results = new ArrayList<>();
+        UUID clinicianUserId = sessionContext.userId();
+        if (clinicianUserId != null) {
+            results.addAll(appointmentRepository.findByClinicianIdAndStatusInOrderByScheduledAtAsc(
+                    clinicianUserId,
+                    pendingStatuses()
+            ));
+        }
+
+        String clinicianEmployeeId = sessionContext.username();
+        if (!isBlank(clinicianEmployeeId)) {
+            results.addAll(appointmentRepository.findByClinicianEmployeeIdIgnoreCaseAndStatusInOrderByScheduledAtAsc(
+                    clinicianEmployeeId,
+                    pendingStatuses()
+            ));
+        }
+
+        LinkedHashMap<UUID, Appointment> unique = new LinkedHashMap<>();
+        for (Appointment appointment : results) {
+            unique.putIfAbsent(appointment.getId(), appointment);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    public List<Appointment> getKioskPendingAppointments(UUID patientId, String accessCode, String qrToken) {
+        auditGuard.assertSessionActive();
+        facilityConfigService.assertAppointmentFlowEnabled();
+
+        if (patientId == null) {
+            throw new AppointmentException("Patient ID is required");
+        }
+        if (isBlank(accessCode) && isBlank(qrToken)) {
+            throw new AppointmentException("Access code or QR token is required");
+        }
+
+        List<Appointment> pending = appointmentRepository.findByPatientIdAndStatusInOrderByScheduledAtAsc(
+                patientId,
+                List.of(Appointment.AppointmentStatus.SCHEDULED)
+        );
+
+        return pending.stream()
+                .filter(appointment -> appointment.matchesKioskCredential(accessCode, qrToken))
+                .toList();
     }
 
     public List<Appointment> getTodayAppointments() {
@@ -122,7 +179,6 @@ public class AppointmentService {
 
     @Transactional
     public AppointmentCheckInResult checkInAppointment(UUID patientId, UUID appointmentId, String complaint) {
-        auditGuard.assertSessionActive();
         facilityConfigService.assertAppointmentFlowEnabled();
 
         if (patientId == null) {
@@ -130,6 +186,7 @@ public class AppointmentService {
         }
         Appointment appointment = appointmentRepository.findById(appointmentId)
                 .orElseThrow(() -> new AppointmentException("Appointment not found"));
+        assertAppointmentForCurrentFacility(appointment);
 
         if (!patientId.equals(appointment.getPatientId())) {
             throw new AppointmentException("Appointment does not belong to provided patient");
@@ -175,6 +232,98 @@ public class AppointmentService {
         );
 
         return new AppointmentCheckInResult(appointment, ticket);
+    }
+
+    @Transactional
+    public AppointmentCheckInResult checkInAppointmentFromKiosk(
+            UUID patientId,
+            UUID appointmentId,
+            String accessCode,
+            String qrToken,
+            String complaint
+    ) {
+        auditGuard.assertSessionActive();
+        facilityConfigService.assertAppointmentFlowEnabled();
+
+        if (patientId == null) {
+            throw new AppointmentException("Patient ID is required");
+        }
+        if (appointmentId == null) {
+            throw new AppointmentException("Appointment ID is required");
+        }
+
+        Appointment appointment = appointmentRepository.findById(appointmentId)
+                .orElseThrow(() -> new AppointmentException("Appointment not found"));
+
+        if (!patientId.equals(appointment.getPatientId())) {
+            throw new AppointmentException("Appointment does not belong to provided patient");
+        }
+        if (!appointment.matchesKioskCredential(accessCode, qrToken)) {
+            throw new AppointmentException("Invalid appointment access credential");
+        }
+
+        return checkInAppointment(patientId, appointmentId, complaint);
+    }
+
+    @Transactional
+    public AppointmentCheckInResult checkInAppointmentByNumberFromKiosk(
+            String appointmentNumber,
+            String givenName,
+            String familyName,
+            java.time.LocalDate dateOfBirth,
+            String complaint
+    ) {
+        facilityConfigService.assertAppointmentFlowEnabled();
+
+        if (isBlank(appointmentNumber)) {
+            throw new AppointmentException("Appointment number is required");
+        }
+        if (isBlank(givenName) || isBlank(familyName) || dateOfBirth == null) {
+            throw new AppointmentException("Name and date of birth are required");
+        }
+
+        Appointment appointment = appointmentRepository.findByAppointmentNumberIgnoreCase(appointmentNumber.trim())
+                .orElseThrow(() -> new AppointmentException("Appointment not found"));
+        assertAppointmentForCurrentFacility(appointment);
+        var patient = patientService.findById(appointment.getPatientId());
+        if (!patient.getGivenName().equalsIgnoreCase(givenName.trim())
+                || !patient.getFamilyName().equalsIgnoreCase(familyName.trim())
+                || !patient.getDateOfBirth().equals(dateOfBirth)) {
+            throw new AppointmentException("Appointment details do not match patient demographics");
+        }
+
+        return checkInAppointment(appointment.getPatientId(), appointment.getId(), complaint);
+    }
+
+    @Transactional
+    public AppointmentCheckInResult checkInAppointmentByQrFromKiosk(
+            String qrToken,
+            String givenName,
+            String familyName,
+            java.time.LocalDate dateOfBirth,
+            String complaint
+    ) {
+        facilityConfigService.assertAppointmentFlowEnabled();
+
+        if (isBlank(qrToken)) {
+            throw new AppointmentException("QR token is required");
+        }
+        if (isBlank(givenName) || isBlank(familyName) || dateOfBirth == null) {
+            throw new AppointmentException("Name and date of birth are required");
+        }
+
+        Appointment appointment = appointmentRepository.findByKioskQrToken(qrToken.trim())
+                .orElseThrow(() -> new AppointmentException("Appointment not found"));
+        assertAppointmentForCurrentFacility(appointment);
+
+        var patient = patientService.findById(appointment.getPatientId());
+        if (!patient.getGivenName().equalsIgnoreCase(givenName.trim())
+                || !patient.getFamilyName().equalsIgnoreCase(familyName.trim())
+                || !patient.getDateOfBirth().equals(dateOfBirth)) {
+            throw new AppointmentException("Appointment details do not match patient demographics");
+        }
+
+        return checkInAppointment(appointment.getPatientId(), appointment.getId(), complaint);
     }
 
     @Transactional
@@ -228,9 +377,37 @@ public class AppointmentService {
         return appointment;
     }
 
+    private List<Appointment.AppointmentStatus> pendingStatuses() {
+        List<Appointment.AppointmentStatus> statuses = new ArrayList<>();
+        statuses.add(Appointment.AppointmentStatus.SCHEDULED);
+        statuses.add(Appointment.AppointmentStatus.CHECKED_IN);
+        statuses.add(Appointment.AppointmentStatus.IN_TRIAGE);
+        statuses.add(Appointment.AppointmentStatus.IN_QUEUE);
+        statuses.add(Appointment.AppointmentStatus.IN_PROGRESS);
+        return statuses;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private void assertAppointmentForCurrentFacility(Appointment appointment) {
+        String appointmentFacilityCode = appointment.getFacilityCode();
+        if (isBlank(appointmentFacilityCode)) {
+            return;
+        }
+        String currentFacilityCode = facilityConfigService.getCurrentConfig().getFacilityCode();
+        if (isBlank(currentFacilityCode)) {
+            return;
+        }
+        if (!appointmentFacilityCode.equalsIgnoreCase(currentFacilityCode)) {
+            throw new AppointmentException("Appointment is not for this facility");
+        }
+    }
+
     private void assertCanManageAppointments() {
         Role role = sessionContext.role();
-        if (role != Role.ADMIN && role != Role.RECEPTIONIST && role != Role.PHYSICIAN && role != Role.NURSE) {
+        if (role != Role.ADMIN && role != Role.SUPER_ADMIN && role != Role.RECEPTIONIST && role != Role.PHYSICIAN && role != Role.NURSE) {
             throw new AppointmentException("Current role cannot manage appointments");
         }
     }
@@ -247,7 +424,8 @@ public class AppointmentService {
             String clinicianName,
             String clinicianEmployeeId,
             String departmentCode,
-            String departmentName
+            String departmentName,
+            String reason
     ) {
     }
 

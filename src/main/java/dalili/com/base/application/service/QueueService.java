@@ -423,12 +423,14 @@ public class QueueService {
         String clinicianEmployeeId = sessionContext.username();
         String clinicianName = sessionContext.username();
 
-        QueueTicket selected = selectAssignedTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
-                .orElseGet(() -> selectRepeatPatientTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
-                        .orElseGet(() -> consultQueue.stream()
-                                .filter(ticket -> !isAssignedToAnotherClinician(ticket, clinicianUserId, clinicianEmployeeId))
-                                .findFirst()
-                                .orElse(consultQueue.get(0))));
+        QueueTicket selected = selectEmergencyPriorityTicket(consultQueue)
+                .orElseGet(() -> selectPriorityAppointmentTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
+                        .orElseGet(() -> selectAssignedTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
+                                .orElseGet(() -> selectRepeatPatientTicket(consultQueue, clinicianUserId, clinicianEmployeeId)
+                                        .orElseGet(() -> consultQueue.stream()
+                                                .filter(ticket -> !isAssignedToAnotherClinician(ticket, clinicianUserId, clinicianEmployeeId))
+                                                .findFirst()
+                                                .orElse(consultQueue.get(0))))));
 
         boolean autoAssignRepeat = !selected.isAssignedToClinician(clinicianUserId, clinicianEmployeeId)
                 && !isAssignedToAnotherClinician(selected, clinicianUserId, clinicianEmployeeId)
@@ -862,6 +864,29 @@ public class QueueService {
                 .findFirst();
     }
 
+    private Optional<QueueTicket> selectEmergencyPriorityTicket(List<QueueTicket> consultQueue) {
+        return consultQueue.stream()
+                .filter(ticket -> ticket.getTriageLevel() == TriageLevel.RED || ticket.getTriageLevel() == TriageLevel.ORANGE)
+                .findFirst();
+    }
+
+    private Optional<QueueTicket> selectPriorityAppointmentTicket(
+            List<QueueTicket> consultQueue,
+            UUID clinicianUserId,
+            String clinicianEmployeeId
+    ) {
+        boolean emergencyWaiting = consultQueue.stream()
+                .anyMatch(ticket -> ticket.getTriageLevel() == TriageLevel.RED || ticket.getTriageLevel() == TriageLevel.ORANGE);
+        if (emergencyWaiting) {
+            return Optional.empty();
+        }
+
+        return consultQueue.stream()
+                .filter(QueueTicket::hasLinkedAppointment)
+                .filter(ticket -> !isAssignedToAnotherClinician(ticket, clinicianUserId, clinicianEmployeeId))
+                .findFirst();
+    }
+
     private Optional<QueueTicket> selectRepeatPatientTicket(
             List<QueueTicket> consultQueue,
             UUID clinicianUserId,
@@ -922,7 +947,7 @@ public class QueueService {
      * Generates the next sequential ticket number for a category.
      */
     private String generateTicketNumber(LocalDate date, QueueTicket.QueueCategory category) {
-        int nextNumber = queueRepository.findMaxTicketNumberForDateAndCategory(date, category)
+        int nextNumber = queueRepository.findMaxTicketNumberForDateAndPrefix(date, category.getPrefix())
                 .map(n -> n + 1)
                 .orElse(1);
 

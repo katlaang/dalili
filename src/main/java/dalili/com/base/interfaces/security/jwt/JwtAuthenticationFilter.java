@@ -56,8 +56,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 UUID sessionId = jwtService.getSessionId(token);
                 UUID patientId = jwtService.getPatientId(token);
 
-                // Check kiosk session usage (single-use enforcement)
-                if (actorType == ActorType.KIOSK) {
+                // Check kiosk session usage only for patient-linked kiosk tokens.
+                // Device-level kiosk tokens (patientId == null) are station identity tokens and reusable.
+                if (actorType == ActorType.KIOSK && patientId != null) {
                     if (sessionActivityService.isKioskSessionUsed(sessionId)) {
                         response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Kiosk session already used");
                         return;

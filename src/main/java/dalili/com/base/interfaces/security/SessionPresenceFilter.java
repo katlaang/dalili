@@ -41,6 +41,7 @@ public class SessionPresenceFilter extends OncePerRequestFilter {
         if (uri.equals("/health") ||
                 uri.equals("/audit/health") ||
                 uri.startsWith("/api/auth/") ||
+                uri.startsWith("/api/kiosk/public/") ||
                 uri.startsWith("/api/anchor/") ||
                 // Allow Swagger/OpenAPI UI and docs
                 uri.equals("/swagger-ui.html") ||

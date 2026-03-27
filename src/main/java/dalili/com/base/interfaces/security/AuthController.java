@@ -5,14 +5,12 @@ import dalili.com.base.application.service.AuthService;
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.domain.user.model.User;
+import dalili.com.base.domain.user.repository.UserRepository;
 import dalili.com.base.interfaces.security.jwt.JwtService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
@@ -25,11 +23,13 @@ public class AuthController {
     private final AuthService authService;
     private final SessionContext sessionContext;
     private final JwtService jwtService;
+    private final UserRepository userRepository;
 
-    public AuthController(AuthService authService, SessionContext sessionContext, JwtService jwtService) {
+    public AuthController(AuthService authService, SessionContext sessionContext, JwtService jwtService, UserRepository userRepository) {
         this.authService = authService;
         this.sessionContext = sessionContext;
         this.jwtService = jwtService;
+        this.userRepository = userRepository;
     }
 
     // ==================== LOGIN ====================
@@ -107,6 +107,29 @@ public class AuthController {
 
     // ==================== LOGOUT ====================
 
+    @GetMapping("/super-admin/bootstrap-status")
+    public ResponseEntity<BootstrapStatusResponse> getSuperAdminBootstrapStatus() {
+        return ResponseEntity.ok(new BootstrapStatusResponse(authService.isSuperAdminBootstrapAllowed()));
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<?> getCurrentProfile() {
+        UUID userId = sessionContext.userId();
+        if (userId == null) {
+            return ResponseEntity.status(401).body(new ErrorResponse("No active session"));
+        }
+
+        return userRepository.findById(userId)
+                .filter(User::isActive)
+                .<ResponseEntity<?>>map(user -> ResponseEntity.ok(new ProfileResponse(
+                        user.getId().toString(),
+                        user.getUsername(),
+                        user.getFullName(),
+                        user.getRole().name()
+                )))
+                .orElseGet(() -> ResponseEntity.status(401).body(new ErrorResponse("Session user not found")));
+    }
+
     @PostMapping("/logout")
     public ResponseEntity<MessageResponse> logout() {
         UUID sessionId = sessionContext.sessionId();
@@ -124,7 +147,9 @@ public class AuthController {
             User user = authService.registerStaff(
                     request.username(),
                     request.password(),
-                    request.fullName(),
+                    request.firstName(),
+                    request.lastName(),
+                    request.email(),
                     request.role()
             );
             return ResponseEntity.ok(new RegisterResponse(user.getId().toString(), "Staff registered"));
@@ -167,7 +192,10 @@ public class AuthController {
     ) {
         try {
             User user = authService.bootstrapFirstSuperAdmin(
-                    request.fullName(),
+                    request.username(),
+                    request.firstName(),
+                    request.lastName(),
+                    request.email(),
                     request.password(),
                     request.company()
             );
@@ -183,7 +211,10 @@ public class AuthController {
     public ResponseEntity<AccountRegistrationResponse> registerAdmin(@RequestBody AdminRegisterRequest request) {
         try {
             User user = authService.registerAdmin(
-                    request.fullName(),
+                    request.username(),
+                    request.firstName(),
+                    request.lastName(),
+                    request.email(),
                     request.password(),
                     request.company()
             );
@@ -206,6 +237,15 @@ public class AuthController {
     record MessageResponse(String message) {
     }
 
+    record ErrorResponse(String error) {
+    }
+
+    record ProfileResponse(String userId, String username, String fullName, String role) {
+    }
+
+    record BootstrapStatusResponse(boolean bootstrapAllowed) {
+    }
+
     record KioskCheckInRequest(String kioskDeviceId, String mrn, String dateOfBirth) {
     }
 
@@ -221,7 +261,14 @@ public class AuthController {
     ) {
     }
 
-    record StaffRegisterRequest(String username, String password, String fullName, Role role) {
+    record StaffRegisterRequest(
+            String username,
+            String password,
+            String firstName,
+            String lastName,
+            String email,
+            Role role
+    ) {
     }
 
     record PatientUserRegisterRequest(String username, String password, UUID patientId) {
@@ -230,10 +277,24 @@ public class AuthController {
     record KioskRegisterRequest(String deviceId, String deviceSecret, String locationDescription) {
     }
 
-    record SuperAdminBootstrapRequest(String fullName, String password, String company) {
+    record SuperAdminBootstrapRequest(
+            String username,
+            String firstName,
+            String lastName,
+            String email,
+            String password,
+            String company
+    ) {
     }
 
-    record AdminRegisterRequest(String fullName, String password, String company) {
+    record AdminRegisterRequest(
+            String username,
+            String firstName,
+            String lastName,
+            String email,
+            String password,
+            String company
+    ) {
     }
 
     record AccountRegistrationResponse(String userId, String username, String message) {

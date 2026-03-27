@@ -14,15 +14,24 @@
 ### Investigation (15-60 min)
 
 1. Check which verification failed:
-    - Hash chain verification → Record was modified
-    - Anchor verification → History was rewritten
+   - Hash chain verification -> Record was modified
+   - Anchor verification -> History was rewritten
 
 2. Run manual verification:
    ```bash
-   curl http://localhost:8080/api/anchor/verify
+   curl -H "Authorization: Bearer <admin-or-physician-jwt>" \
+     https://<api-domain>/api/anchor/verify
    ```
 
-3. Compare database records with `audit-anchors.log` file
+   Notes:
+   - The endpoint requires `ADMIN`, `SUPER_ADMIN`, or `PHYSICIAN`.
+   - `/audit/health` is public, `/api/anchor/verify` is not.
+
+3. Compare database records with the anchor log inside the app container:
+   ```bash
+   docker compose -f docker-compose.vm.yml exec app \
+     sh -lc 'tail -n 50 /home/spring/.dalili/audit-anchors.log'
+   ```
 
 4. Review system access logs for the relevant time period
 
@@ -40,8 +49,12 @@ Only after confirming the cause was benign:
 
 1. Document the incident and reason for reset
 2. Restart the application (clears `tamperDetected` flag)
-3. Create a fresh anchor: `POST /api/anchor/create`
-4. Verify the system: `GET /audit/health`
+3. Create a fresh anchor:
+   ```bash
+   curl -X POST -H "Authorization: Bearer <admin-or-physician-jwt>" \
+     https://<api-domain>/api/anchor/create
+   ```
+4. Verify the system: `GET https://<api-domain>/audit/health`
 
 ---
 
@@ -54,4 +67,4 @@ Only after confirming the cause was benign:
 
 ---
 
-*Runbook version 1.0 | January 2026*
+*Runbook version 1.1 | March 2026*

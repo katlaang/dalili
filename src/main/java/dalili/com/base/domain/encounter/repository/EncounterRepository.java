@@ -72,11 +72,33 @@ public interface EncounterRepository extends ImmutableClinicalRepository<Encount
     long countByStatusAndStartedAtBetween(Encounter.EncounterStatus status, Instant start, Instant end);
 
     /**
+     * Counts encounters by clinician and status within a date range.
+     */
+    long countByClinicianIdAndStatusAndStartedAtBetween(
+            UUID clinicianId,
+            Encounter.EncounterStatus status,
+            Instant start,
+            Instant end
+    );
+
+    /**
      * Finds completed encounters for a patient.
      */
     @Query("SELECT e FROM Encounter e WHERE e.patientId = :patientId " +
             "AND e.status = 'COMPLETED' ORDER BY e.completedAt DESC")
     List<Encounter> findCompletedByPatientId(UUID patientId);
+
+    /**
+     * Average transcript accuracy score for clinician encounters within a date range.
+     */
+    @Query("SELECT AVG(e.transcriptAccuracyScore) FROM Encounter e WHERE e.clinicianId = :clinicianId " +
+            "AND e.status = 'COMPLETED' AND e.transcriptAccuracyScore IS NOT NULL " +
+            "AND e.startedAt BETWEEN :start AND :end")
+    Double averageTranscriptAccuracyByClinicianAndStartedAtBetween(
+            UUID clinicianId,
+            Instant start,
+            Instant end
+    );
 
     /**
      * Finds patient IDs in a queue slice who were previously managed by the clinician.

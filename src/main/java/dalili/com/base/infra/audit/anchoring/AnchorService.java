@@ -5,6 +5,7 @@ import dalili.com.base.infra.audit.AuditEventRepository;
 import dalili.com.base.infra.audit.health.AuditHealthStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -31,14 +32,19 @@ import java.util.List;
 public class AnchorService {
 
     private static final Logger log = LoggerFactory.getLogger(AnchorService.class);
-    private static final Path ANCHOR_FILE = Path.of("audit-anchors.log");
 
     private final AuditEventRepository auditRepository;
     private final AnchorRepository anchorRepository;
+    private final Path anchorFile;
 
-    public AnchorService(AuditEventRepository auditRepository, AnchorRepository anchorRepository) {
+    public AnchorService(
+            AuditEventRepository auditRepository,
+            AnchorRepository anchorRepository,
+            @Value("${dalili.storage.dir:${user.home}/.dalili}") String storageDir
+    ) {
         this.auditRepository = auditRepository;
         this.anchorRepository = anchorRepository;
+        this.anchorFile = resolvePath(storageDir);
     }
 
     /**
@@ -123,11 +129,23 @@ public class AnchorService {
 
     private void writeToAnchorFile(String line) {
         try {
-            Files.writeString(ANCHOR_FILE, line,
+            Path parent = anchorFile.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(anchorFile, line,
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND);
         } catch (IOException e) {
             log.warn("Could not write to anchor file: {}", e.getMessage());
         }
+    }
+
+    private Path resolvePath(String storageDir) {
+        Path legacyPath = Path.of("audit-anchors.log");
+        if (Files.exists(legacyPath)) {
+            return legacyPath;
+        }
+        return Path.of(storageDir, "audit-anchors.log");
     }
 }

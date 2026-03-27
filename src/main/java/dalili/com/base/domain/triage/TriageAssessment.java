@@ -189,6 +189,18 @@ public class TriageAssessment {
     @Column(length = 2000)
     private String nursingNotes;
 
+    /**
+     * Emergency contact name captured during triage.
+     */
+    @Column(length = 255)
+    private String emergencyContactName;
+
+    /**
+     * Emergency contact phone captured during triage.
+     */
+    @Column(length = 100)
+    private String emergencyContactPhone;
+
     // ==================== TRIAGE CLASSIFICATION ====================
 
     /**
@@ -504,6 +516,14 @@ public class TriageAssessment {
      */
     public void recordNursingNotes(String notes) {
         this.nursingNotes = notes;
+    }
+
+    /**
+     * Records emergency contact details.
+     */
+    public void recordEmergencyContact(String name, String phone) {
+        this.emergencyContactName = name;
+        this.emergencyContactPhone = phone;
     }
 
     // ==================== RED FLAG SETTERS ====================

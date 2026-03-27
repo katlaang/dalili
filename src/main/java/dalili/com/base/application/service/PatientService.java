@@ -103,14 +103,15 @@ public class PatientService {
         auditGuard.assertSessionActive();
         log.info("Registering patient (minimal profile)");
 
-        if (patientRepository.existsByMrn(mrn)) {
-            throw new PatientException("MRN already exists: " + mrn);
+        String normalizedMrn = normalizePatientId(mrn);
+        if (patientRepository.existsByMrn(normalizedMrn)) {
+            throw new PatientException("Patient ID already exists: " + normalizedMrn);
         }
 
-        Patient patient = Patient.register(mrn, givenName, familyName, dateOfBirth, sex);
+        Patient patient = Patient.register(normalizedMrn, givenName, familyName, dateOfBirth, sex);
         patient = patientRepository.save(patient);
 
-        auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + mrn);
+        auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + normalizedMrn);
         log.info("Patient registered patientId={}", patient.getId());
 
         return patient;
@@ -134,15 +135,16 @@ public class PatientService {
         auditGuard.assertSessionActive();
         log.info("Registering patient (full profile)");
 
-        if (patientRepository.existsByMrn(mrn)) {
-            throw new PatientException("MRN already exists: " + mrn);
+        String normalizedMrn = normalizePatientId(mrn);
+        if (patientRepository.existsByMrn(normalizedMrn)) {
+            throw new PatientException("Patient ID already exists: " + normalizedMrn);
         }
 
         if (nationalId != null && patientRepository.existsByNationalId(nationalId)) {
             throw new PatientException("National ID already exists: " + nationalId);
         }
 
-        Patient patient = Patient.register(mrn, givenName, familyName, dateOfBirth, sex);
+        Patient patient = Patient.register(normalizedMrn, givenName, familyName, dateOfBirth, sex);
         patient.setNationalId(nationalId);
         patient.setMiddleName(middleName);
         patient.setPhoneNumber(phoneNumber);
@@ -152,7 +154,7 @@ public class PatientService {
 
         patient = patientRepository.save(patient);
 
-        auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + mrn);
+        auditService.record("PATIENT_REGISTERED", patient.getId(), "New patient registered: " + normalizedMrn);
         log.info("Patient registered with full profile patientId={}", patient.getId());
 
         return patient;
@@ -186,6 +188,21 @@ public class PatientService {
     }
 
     /**
+     * Front-desk verification by patient ID + DOB.
+     * Returns limited patient identity for receptionist workflows without opening full chart context.
+     */
+    public Patient findForFrontDeskLookup(String mrn, LocalDate dateOfBirth) {
+        String normalizedMrn = normalizePatientId(mrn);
+        Patient patient = patientRepository.findByMrnAndActiveTrue(normalizedMrn)
+                .orElseThrow(() -> new PatientException("Patient not found"));
+
+        if (!patient.getDateOfBirth().equals(dateOfBirth)) {
+            throw new PatientException("Patient number and date of birth do not match");
+        }
+        return patient;
+    }
+
+    /**
      * Resolves an existing patient by demographics or creates a new record for kiosk flow.
      */
     @Transactional
@@ -208,7 +225,7 @@ public class PatientService {
                         resolvedSex
                 )
                 .orElseGet(() -> {
-                    String generatedMrn = generateKioskMrn();
+                    String generatedMrn = generateKioskPatientId();
                     Patient created = Patient.register(
                             generatedMrn,
                             normalizedGivenName,
@@ -249,10 +266,22 @@ public class PatientService {
         return value.trim();
     }
 
-    private String generateKioskMrn() {
+    private String normalizePatientId(String mrn) {
+        if (mrn == null || mrn.isBlank()) {
+            throw new PatientException("Patient ID is required");
+        }
+        String normalized = mrn.trim();
+        if (!normalized.matches("\\d{8}")) {
+            throw new PatientException("Patient ID must be exactly 8 digits");
+        }
+        return normalized;
+    }
+
+    private String generateKioskPatientId() {
         String generated;
         do {
-            generated = "KIO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            int value = java.util.concurrent.ThreadLocalRandom.current().nextInt(0, 100_000_000);
+            generated = String.format("%08d", value);
         } while (patientRepository.existsByMrn(generated));
         return generated;
     }

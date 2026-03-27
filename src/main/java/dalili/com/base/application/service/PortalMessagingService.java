@@ -143,6 +143,8 @@ public class PortalMessagingService {
     private void assertPortalSender() {
         Role role = sessionContext.role();
         if (role != Role.ADMIN
+                && role != Role.PHYSICIAN
+                && role != Role.NURSE
                 && role != Role.PHARMACIST
                 && role != Role.LAB_TECHNICIAN
                 && role != Role.RECEPTIONIST) {
@@ -179,5 +181,4 @@ public class PortalMessagingService {
         }
     }
 }
-
 

@@ -1,34 +1,43 @@
-﻿server:
-  port: 8181
+server:
+  port: ${PORT:8181}
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5433/dalili
-    username: postgres
-    password: admin
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/dalili}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:admin}
     driver-class-name: org.postgresql.Driver
   jpa:
     database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
-      ddl-auto: update
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:update}
 dalili:
+  storage:
+    dir: ${DALILI_STORAGE_DIR:${user.home}/.dalili}
   clinic:
-    name: Dalili Health Clinic
+    code: ${DALILI_CLINIC_CODE:DALILI_MAIN}
+    name: ${DALILI_CLINIC_NAME:Dalili Health Clinic}
+    # Comma-separated list. Add multiple facilities here to allow admin/super-admin registration under each name.
+    allowed-names: ${DALILI_CLINIC_ALLOWED_NAMES:Dalili Health Clinic,Sunrise Community Clinic}
   jwt:
-    secret: your-256-bit-secret-key-for-jwt-signing-min-32-chars
-    staff-expiration-hours: 12
-    patient-expiration-hours: 24
-    kiosk-expiration-minutes: 10
+    secret: ${DALILI_JWT_SECRET:your-256-bit-secret-key-for-jwt-signing-min-32-chars}
+    staff-expiration-hours: ${DALILI_JWT_STAFF_EXPIRATION_HOURS:12}
+    patient-expiration-hours: ${DALILI_JWT_PATIENT_EXPIRATION_HOURS:24}
+    kiosk-expiration-minutes: ${DALILI_JWT_KIOSK_EXPIRATION_MINUTES:10}
   kiosk:
-    auto-provision-default: true
-    default-device-id: kiosk-front-desk-1
-    default-device-secret: kiosk-secret-change-me
-    default-location-description: Front Desk 1
+    auto-provision-default: ${DALILI_KIOSK_AUTO_PROVISION_DEFAULT:true}
+    default-device-id: ${DALILI_KIOSK_DEFAULT_DEVICE_ID:kiosk-front-desk-1}
+    default-device-secret: ${DALILI_KIOSK_DEFAULT_DEVICE_SECRET:kiosk-secret-change-me}
+    default-location-description: ${DALILI_KIOSK_DEFAULT_LOCATION_DESCRIPTION:Front Desk 1}
   ai:
-    transcription-model: whisper-large-v3-turbo
+    groq-api-key: ${GROQ_API_KEY:}
+    model: ${DALILI_AI_MODEL:llama-3.1-70b-versatile}
+    transcription-model: ${DALILI_AI_TRANSCRIPTION_MODEL:whisper-large-v3-turbo}
+    enabled: ${DALILI_AI_ENABLED:true}
   security:
-    allowed-origins: http://localhost:*,http://127.0.0.1:*,http://192.168.*:*,http://10.*:*
+    allowed-origins: ${DALILI_SECURITY_ALLOWED_ORIGINS:http://localhost:*,http://127.0.0.1:*,http://[::1]:*,http://192.168.*:*,http://10.*:*,http://172.*:*}
   session:
-    patient-inactivity-seconds: 300   # 5 minutes
-    staff-inactivity-seconds: 1800    # 30 minutes
+    patient-inactivity-seconds: ${DALILI_SESSION_PATIENT_INACTIVITY_SECONDS:300}   # 5 minutes
+    staff-inactivity-seconds: ${DALILI_SESSION_STAFF_INACTIVITY_SECONDS:300}     # 5 minutes
   audit:
-    skip-verification: true  # Set to false to enforce verification (this is temporary for fixing the ledger)
+    device-id: ${DALILI_AUDIT_DEVICE_ID:}
+    skip-verification: ${DALILI_AUDIT_SKIP_VERIFICATION:true}  # Set to false to enforce verification (this is temporary for fixing the ledger)

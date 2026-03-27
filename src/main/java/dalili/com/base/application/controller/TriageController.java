@@ -240,7 +240,9 @@ public class TriageController {
                     request.allergies(),
                     request.currentMedications(),
                     request.pastMedicalHistory(),
-                    request.nursingNotes()
+                    request.nursingNotes(),
+                    request.emergencyContactName(),
+                    request.emergencyContactPhone()
             );
             TriageAssessment assessment = triageService.recordClinicalObservations(assessmentId, observations);
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
@@ -547,7 +549,13 @@ public class TriageController {
 
             @Schema(description = "Nursing notes and observations",
                     example = "Patient appears distressed, holding head. Photophobia noted.")
-            String nursingNotes
+            String nursingNotes,
+
+            @Schema(description = "Emergency contact name")
+            String emergencyContactName,
+
+            @Schema(description = "Emergency contact phone")
+            String emergencyContactPhone
     ) {
     }
 
@@ -693,6 +701,12 @@ public class TriageController {
             @Schema(description = "Nursing notes")
             String nursingNotes,
 
+            @Schema(description = "Emergency contact name")
+            String emergencyContactName,
+
+            @Schema(description = "Emergency contact phone")
+            String emergencyContactPhone,
+
             // Triage classification
             @Schema(description = "System-calculated triage level")
             TriageLevel systemTriageLevel,
@@ -765,6 +779,8 @@ public class TriageController {
                     a.getCurrentMedications(),
                     a.getPastMedicalHistory(),
                     a.getNursingNotes(),
+                    a.getEmergencyContactName(),
+                    a.getEmergencyContactPhone(),
                     a.getSystemTriageLevel(),
                     a.getFinalTriageLevel(),
                     a.isTriageOverridden(),

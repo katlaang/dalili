@@ -23,7 +23,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
 
@@ -699,6 +701,27 @@ public class EncounterService {
     }
 
     /**
+     * Records family history for physician encounter documentation.
+     */
+    @Transactional
+    public Encounter recordFamilyHistory(UUID encounterId, String familyHistory) {
+        auditGuard.assertSessionActive();
+        log.info("Recording family history encounterId={} author={}", encounterId, sessionContext.username());
+
+        Encounter encounter = findByIdOrThrow(encounterId);
+        try {
+            encounter.recordFamilyHistory(familyHistory);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new EncounterException(e.getMessage());
+        }
+
+        encounter = encounterRepository.save(encounter);
+        auditService.record("ENCOUNTER_FAMILY_HISTORY_RECORDED", encounter.getPatientId(),
+                "Family history updated in encounter documentation");
+        return encounter;
+    }
+
+    /**
      * Confirms note with AI comparison when available, otherwise uses manual/offline confirmation.
      */
     @Transactional
@@ -1031,24 +1054,106 @@ public class EncounterService {
         auditGuard.assertSessionActive();
         log.info("Cancelling encounter encounterId={} cancelledBy={}", encounterId, sessionContext.username());
 
+        if (reason == null || reason.isBlank()) {
+            throw new EncounterException("Cancellation reason is required");
+        }
+
         Encounter encounter = findByIdOrThrow(encounterId);
 
         try {
-            encounter.cancel();
-        } catch (IllegalStateException e) {
+            encounter.cancel(reason, sessionContext.username());
+        } catch (IllegalStateException | IllegalArgumentException e) {
             throw new EncounterException(e.getMessage());
         }
 
         encounter = encounterRepository.save(encounter);
 
         auditService.record("ENCOUNTER_CANCELLED", encounter.getPatientId(),
-                String.format("Encounter cancelled: %s", reason));
+                String.format("Encounter cancelled by %s: %s", sessionContext.username(), reason.trim()));
         log.info("Encounter cancelled encounterId={} patientId={}", encounter.getId(), encounter.getPatientId());
 
         return encounter;
     }
 
+    public PhysicianDashboard getPhysicianDashboard() {
+        auditGuard.assertSessionActive();
+
+        UUID clinicianId = sessionContext.userId();
+        if (clinicianId == null) {
+            throw new EncounterException("Clinician session is required");
+        }
+
+        LocalDate today = LocalDate.now();
+        LocalDate weekStart = today.minusDays(today.getDayOfWeek().getValue() - 1L);
+        LocalDate monthStart = today.withDayOfMonth(1);
+        LocalDate yearStart = today.withDayOfYear(1);
+
+        Instant now = Instant.now();
+        Instant weekStartInstant = atStartOfDay(weekStart);
+        Instant monthStartInstant = atStartOfDay(monthStart);
+        Instant yearStartInstant = atStartOfDay(yearStart);
+
+        long patientsSeenWeek = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
+                clinicianId,
+                Encounter.EncounterStatus.COMPLETED,
+                weekStartInstant,
+                now
+        );
+        long patientsSeenMonth = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
+                clinicianId,
+                Encounter.EncounterStatus.COMPLETED,
+                monthStartInstant,
+                now
+        );
+        long patientsSeenYear = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
+                clinicianId,
+                Encounter.EncounterStatus.COMPLETED,
+                yearStartInstant,
+                now
+        );
+
+        Double weekAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
+                clinicianId, weekStartInstant, now
+        );
+        Double monthAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
+                clinicianId, monthStartInstant, now
+        );
+        Double yearAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
+                clinicianId, yearStartInstant, now
+        );
+
+        return new PhysicianDashboard(
+                clinicianId,
+                sessionContext.username(),
+                patientsSeenWeek,
+                patientsSeenMonth,
+                patientsSeenYear,
+                roundPercent(weekAccuracy),
+                roundPercent(monthAccuracy),
+                roundPercent(yearAccuracy),
+                weekStart.toString(),
+                monthStart.toString(),
+                yearStart.toString(),
+                now.toString()
+        );
+    }
+
     // ==================== RETRIEVAL ====================
+
+    public Optional<Encounter> getEncounterForReading(UUID encounterId) {
+        auditGuard.assertSessionActive();
+
+        Optional<Encounter> encounter = encounterRepository.findById(encounterId);
+        encounter.ifPresent(value -> {
+            auditService.record(
+                    "ENCOUNTER_NOTES_VIEWED",
+                    value.getPatientId(),
+                    "encounterId=" + value.getId() + ", viewedBy=" + sessionContext.username()
+            );
+            log.info("Encounter notes viewed encounterId={} viewedBy={}", value.getId(), sessionContext.username());
+        });
+        return encounter;
+    }
 
     public Optional<Encounter> findById(UUID encounterId) {
         return encounterRepository.findById(encounterId);
@@ -1183,6 +1288,19 @@ public class EncounterService {
         return Encounter.NoteAccuracyRating.UNSAFE;
     }
 
+    private Instant atStartOfDay(LocalDate date) {
+        return LocalDateTime.of(date, java.time.LocalTime.MIN)
+                .atZone(ZoneId.systemDefault())
+                .toInstant();
+    }
+
+    private Double roundPercent(Double value) {
+        if (value == null) {
+            return null;
+        }
+        return Math.round(value * 10.0) / 10.0;
+    }
+
     // ==================== RECORDS ====================
 
     public record MedicationOrderInput(
@@ -1224,6 +1342,22 @@ public class EncounterService {
             boolean hasDiagnosis,
             boolean hasMedicationOrders,
             String message
+    ) {
+    }
+
+    public record PhysicianDashboard(
+            UUID clinicianId,
+            String clinicianName,
+            long patientsSeenWeek,
+            long patientsSeenMonth,
+            long patientsSeenYear,
+            Double aiTranscriptionCorrectnessWeekPercent,
+            Double aiTranscriptionCorrectnessMonthPercent,
+            Double aiTranscriptionCorrectnessYearPercent,
+            String weekStartDate,
+            String monthStartDate,
+            String yearStartDate,
+            String generatedAt
     ) {
     }
 

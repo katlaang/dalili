@@ -136,6 +136,7 @@ public class KioskQueueController {
                     patient.getFullName(),
                     ticket.getId(),
                     ticket.getTicketNumber(),
+                    ticket.getTrackingNumber(),
                     ticket.getCategory().getDisplayName(),
                     ticket.getTriageLevel().getDisplayName(),
                     ticket.getTargetWaitMinutes(),
@@ -419,6 +420,7 @@ public class KioskQueueController {
                     patient.getFullName(),
                     ticket.getId(),
                     ticket.getTicketNumber(),
+                    ticket.getTrackingNumber(),
                     ticket.getCategory().getDisplayName(),
                     ticket.getTriageLevel().getDisplayName(),
                     ticket.getTargetWaitMinutes(),
@@ -460,6 +462,7 @@ public class KioskQueueController {
                     patient.getFullName(),
                     ticket.getId(),
                     ticket.getTicketNumber(),
+                    ticket.getTrackingNumber(),
                     ticket.getCategory().getDisplayName(),
                     ticket.getTriageLevel().getDisplayName(),
                     ticket.getTargetWaitMinutes(),
@@ -519,6 +522,9 @@ public class KioskQueueController {
 
             @Schema(description = "Ticket number for display", example = "A-001")
             String ticketNumber,
+
+            @Schema(description = "Date-stamped tracking reference", example = "20260314-WK-001")
+            String trackingNumber,
 
             @Schema(description = "Queue category", example = "General")
             String category,

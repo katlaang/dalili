@@ -38,9 +38,13 @@ out/
 
 #####Secrets ####
 application-local.yml
+.env
 
 ### Frontend ###
 frontend/node_modules/
 frontend/.expo/
 frontend/dist/
 frontend/web-build/
+frontend/.env.production.local
+frontend/.env.local
+notepad.txt

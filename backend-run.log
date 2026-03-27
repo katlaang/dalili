@@ -1,0 +1,86 @@
+> Task :compileJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :classes UP-TO-DATE
+> Task :resolveMainClassName
+
+> Task :bootRun
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v4.0.2)
+
+2026-03-11T18:32:09.886-05:00  INFO 34600 --- [dalili] [  restartedMain] dalili.com.base.DaliliApplication        : Starting DaliliApplication using Java 21.0.5 with PID 34600 (C:\Projects\Dalili health\dalili\build\classes\java\main started by eunic in C:\Projects\Dalili health\dalili)
+2026-03-11T18:32:09.889-05:00  INFO 34600 --- [dalili] [  restartedMain] dalili.com.base.DaliliApplication        : No active profile set, falling back to 1 default profile: "default"
+2026-03-11T18:32:09.939-05:00  INFO 34600 --- [dalili] [  restartedMain] .e.DevToolsPropertyDefaultsPostProcessor : Devtools property defaults active! Set 'spring.devtools.add-properties' to 'false' to disable
+2026-03-11T18:32:09.939-05:00  INFO 34600 --- [dalili] [  restartedMain] .e.DevToolsPropertyDefaultsPostProcessor : For additional web related logging consider setting the 'logging.level.web' property to 'DEBUG'
+2026-03-11T18:32:11.149-05:00  INFO 34600 --- [dalili] [  restartedMain] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+2026-03-11T18:32:11.269-05:00  INFO 34600 --- [dalili] [  restartedMain] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 112 ms. Found 19 JPA repository interfaces.
+2026-03-11T18:32:12.067-05:00  INFO 34600 --- [dalili] [  restartedMain] o.s.boot.tomcat.TomcatWebServer          : Tomcat initialized with port 8181 (http)
+2026-03-11T18:32:12.082-05:00  INFO 34600 --- [dalili] [  restartedMain] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-03-11T18:32:12.083-05:00  INFO 34600 --- [dalili] [  restartedMain] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/11.0.15]
+2026-03-11T18:32:12.135-05:00  INFO 34600 --- [dalili] [  restartedMain] b.w.c.s.WebApplicationContextInitializer : Root WebApplicationContext: initialization completed in 2194 ms
+2026-03-11T18:32:12.352-05:00  INFO 34600 --- [dalili] [  restartedMain] org.hibernate.orm.jpa                    : HHH008540: Processing PersistenceUnitInfo [name: default]
+2026-03-11T18:32:12.425-05:00  INFO 34600 --- [dalili] [  restartedMain] org.hibernate.orm.core                   : HHH000001: Hibernate ORM core version 7.2.1.Final
+2026-03-11T18:32:12.918-05:00  INFO 34600 --- [dalili] [  restartedMain] o.s.o.j.p.SpringPersistenceUnitInfo      : No LoadTimeWeaver setup: ignoring JPA class transformer
+2026-03-11T18:32:12.964-05:00  INFO 34600 --- [dalili] [  restartedMain] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-03-11T18:32:13.137-05:00  INFO 34600 --- [dalili] [  restartedMain] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@754560ed
+2026-03-11T18:32:13.138-05:00  INFO 34600 --- [dalili] [  restartedMain] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-03-11T18:32:13.174-05:00  WARN 34600 --- [dalili] [  restartedMain] org.hibernate.orm.deprecation            : HHH90000025: PostgreSQLDialect does not need to be specified explicitly using 'hibernate.dialect' (remove the property setting and it will be selected by default)
+2026-03-11T18:32:13.197-05:00  INFO 34600 --- [dalili] [  restartedMain] org.hibernate.orm.connections.pooling    : HHH10001005: Database info:
+	Database JDBC URL [jdbc:postgresql://localhost:5433/dalili]
+	Database driver: PostgreSQL JDBC Driver
+	Database dialect: PostgreSQLDialect
+	Database version: 17.4
+	Default catalog/schema: dalili/public
+	Autocommit mode: undefined/unknown
+	Isolation level: READ_COMMITTED [default READ_COMMITTED]
+	JDBC fetch size: none
+	Pool: DataSourceConnectionProvider
+	Minimum pool size: undefined/unknown
+	Maximum pool size: undefined/unknown
+2026-03-11T18:32:14.905-05:00  INFO 34600 --- [dalili] [  restartedMain] org.hibernate.orm.core                   : HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
+2026-03-11T18:32:15.011-05:00  INFO 34600 --- [dalili] [  restartedMain] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-03-11T18:32:15.087-05:00  INFO 34600 --- [dalili] [  restartedMain] o.s.d.j.r.query.QueryEnhancerFactories   : Hibernate is in classpath; If applicable, HQL parser will be used.
+2026-03-11T18:32:16.784-05:00  WARN 34600 --- [dalili] [  restartedMain] dalili.com.base.config.AiConfig          : Groq API key not configured - AI features will be unavailable
+2026-03-11T18:32:16.784-05:00  INFO 34600 --- [dalili] [  restartedMain] d.c.base.domain.ai.ConnectivityMonitor   : Connectivity override changed: AUTO -> FORCE_OFF
+2026-03-11T18:32:17.154-05:00  INFO 34600 --- [dalili] [  restartedMain] d.c.b.a.service.PolicyEscalationService  : Loaded classpath policy: KE-TRIAGE-2026.02
+2026-03-11T18:32:17.155-05:00  INFO 34600 --- [dalili] [  restartedMain] d.c.b.a.service.PolicyEscalationService  : Policy engine ready: KE-TRIAGE-2026.02
+2026-03-11T18:32:17.355-05:00  WARN 34600 --- [dalili] [  restartedMain] JpaBaseConfiguration$JpaWebConfiguration : spring.jpa.open-in-view is enabled by default. Therefore, database queries may be performed during view rendering. Explicitly configure spring.jpa.open-in-view to disable this warning
+2026-03-11T18:32:17.452-05:00  WARN 34600 --- [dalili] [  restartedMain] .s.a.UserDetailsServiceAutoConfiguration : 
+
+Using generated security password: 172e818f-eed4-494a-90da-ca4eb07dcc4d
+
+This generated password is for development use only. Your security configuration must be updated before running your application in production.
+
+2026-03-11T18:32:17.463-05:00  INFO 34600 --- [dalili] [  restartedMain] r$InitializeUserDetailsManagerConfigurer : Global AuthenticationManager configured with UserDetailsService bean with name inMemoryUserDetailsManager
+2026-03-11T18:32:18.449-05:00  INFO 34600 --- [dalili] [  restartedMain] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 1 endpoint beneath base path '/actuator'
+2026-03-11T18:32:18.573-05:00  INFO 34600 --- [dalili] [  restartedMain] o.s.boot.tomcat.TomcatWebServer          : Tomcat started on port 8181 (http) with context path '/'
+2026-03-11T18:32:18.593-05:00  INFO 34600 --- [dalili] [  restartedMain] dalili.com.base.DaliliApplication        : Started DaliliApplication in 9.118 seconds (process running for 9.628)
+2026-03-11T18:32:18.821-05:00  INFO 34600 --- [dalili] [  restartedMain] d.c.b.a.service.KioskStartupProvisioner  : Default kiosk already provisioned deviceId=kiosk-front-desk-1
+2026-03-11T18:32:18.821-05:00  WARN 34600 --- [dalili] [  restartedMain] d.c.b.infra.audit.AuditStartupVerifier   : AUDIT VERIFICATION SKIPPED - This should only be used for development or recovery scenarios
+2026-03-11T18:32:40.807-05:00  INFO 34600 --- [dalili] [nio-8181-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-03-11T18:32:40.807-05:00  INFO 34600 --- [dalili] [nio-8181-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-03-11T18:32:40.811-05:00  INFO 34600 --- [dalili] [nio-8181-exec-1] o.s.web.servlet.DispatcherServlet        : Completed initialization in 3 ms
+2026-03-11T18:35:18.399-05:00  WARN 34600 --- [dalili] [nio-8181-exec-8] d.c.b.i.security.AuthController          : Staff login failed username=nonexistent reason=Invalid credentials
+
+> Task :bootRun FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':bootRun'.
+> Process 'command 'C:\Users\eunic\.jdks\corretto-21.0.5\bin\java.exe'' finished with non-zero exit value 1
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 10m 35s
+4 actionable tasks: 2 executed, 2 up-to-date

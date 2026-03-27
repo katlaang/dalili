@@ -235,6 +235,8 @@ public record EncounterPreview(
             String currentMedications,
             String pastMedicalHistory,
             String nursingNotes,
+            String emergencyContactName,
+            String emergencyContactPhone,
 
             // Triage classification
             TriageLevel systemTriageLevel,
@@ -278,6 +280,8 @@ public record EncounterPreview(
                     a.getCurrentMedications(),
                     a.getPastMedicalHistory(),
                     a.getNursingNotes(),
+                    a.getEmergencyContactName(),
+                    a.getEmergencyContactPhone(),
                     a.getSystemTriageLevel(),
                     a.getFinalTriageLevel(),
                     a.isTriageOverridden(),

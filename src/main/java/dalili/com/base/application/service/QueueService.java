@@ -6,13 +6,16 @@ import dalili.com.base.domain.encounter.repository.EncounterRepository;
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.queue.PriorityModifier;
 import dalili.com.base.domain.queue.QueueTicket;
+import dalili.com.base.domain.queue.QueueTicketCounter;
 import dalili.com.base.domain.triage.TriageLevel;
 import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
+import dalili.com.base.repository.queue.QueueTicketCounterRepository;
 import dalili.com.base.repository.queue.QueueTicketRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -58,6 +61,7 @@ public class QueueService {
     private static final Logger log = LoggerFactory.getLogger(QueueService.class);
 
     private final QueueTicketRepository queueRepository;
+    private final QueueTicketCounterRepository queueTicketCounterRepository;
     private final EncounterRepository encounterRepository;
     private final PatientService patientService;
     private final PatientDataAccessService patientDataAccessService;
@@ -77,6 +81,7 @@ public class QueueService {
      */
     public QueueService(
             QueueTicketRepository queueRepository,
+            QueueTicketCounterRepository queueTicketCounterRepository,
             EncounterRepository encounterRepository,
             PatientService patientService,
             PatientDataAccessService patientDataAccessService,
@@ -86,6 +91,7 @@ public class QueueService {
             SessionContext sessionContext
     ) {
         this.queueRepository = queueRepository;
+        this.queueTicketCounterRepository = queueTicketCounterRepository;
         this.encounterRepository = encounterRepository;
         this.patientService = patientService;
         this.patientDataAccessService = patientDataAccessService;
@@ -175,6 +181,7 @@ public class QueueService {
                 sanitizedComplaint,
                 issuedBy
         );
+        ticket.capturePatientSnapshot(patient.getMrn(), patient.getFullName(), patient.getDateOfBirth());
 
         ticket = queueRepository.save(ticket);
 
@@ -211,6 +218,8 @@ public class QueueService {
                 initialComplaint,
                 issuedBy
         );
+        Patient patient = patientService.findById(patientId);
+        ticket.capturePatientSnapshot(patient.getMrn(), patient.getFullName(), patient.getDateOfBirth());
 
         ticket = queueRepository.save(ticket);
         log.info("Emergency queue ticket issued ticketId={} patientId={}", ticket.getId(), patientId);
@@ -947,11 +956,28 @@ public class QueueService {
      * Generates the next sequential ticket number for a category.
      */
     private String generateTicketNumber(LocalDate date, QueueTicket.QueueCategory category) {
-        int nextNumber = queueRepository.findMaxTicketNumberForDateAndPrefix(date, category.getPrefix())
-                .map(n -> n + 1)
-                .orElse(1);
+        int nextNumber = reserveNextTicketSequence(date, category);
 
         return String.format("%s-%03d", category.getPrefix(), nextNumber);
+    }
+
+    private int reserveNextTicketSequence(LocalDate date, QueueTicket.QueueCategory category) {
+        QueueTicketCounter counter = queueTicketCounterRepository
+                .findByQueueDateAndCategoryForUpdate(date, category)
+                .orElseGet(() -> createCounter(date, category));
+
+        int nextNumber = counter.reserveNextSequence();
+        queueTicketCounterRepository.save(counter);
+        return nextNumber;
+    }
+
+    private QueueTicketCounter createCounter(LocalDate date, QueueTicket.QueueCategory category) {
+        try {
+            return queueTicketCounterRepository.saveAndFlush(QueueTicketCounter.initialize(date, category));
+        } catch (DataIntegrityViolationException conflict) {
+            return queueTicketCounterRepository.findByQueueDateAndCategoryForUpdate(date, category)
+                    .orElseThrow(() -> new QueueException("Unable to reserve queue number. Please retry."));
+        }
     }
 
     /**

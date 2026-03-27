@@ -187,6 +187,7 @@ public class PatientAppointmentController {
     public record QueueTicketView(
             UUID id,
             String ticketNumber,
+            String trackingNumber,
             String category,
             String status,
             String triageLevel,
@@ -198,6 +199,7 @@ public class PatientAppointmentController {
             return new QueueTicketView(
                     ticket.getId(),
                     ticket.getTicketNumber(),
+                    ticket.getTrackingNumber(),
                     ticket.getCategory() != null ? ticket.getCategory().name() : null,
                     ticket.getStatus() != null ? ticket.getStatus().name() : null,
                     ticket.getTriageLevel() != null ? ticket.getTriageLevel().name() : null,

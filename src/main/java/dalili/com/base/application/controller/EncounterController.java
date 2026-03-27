@@ -210,6 +210,35 @@ public class EncounterController {
     }
 
     @Operation(
+            summary = "Queue ambient encounter audio transcription in background",
+            description = "Ends synchronous workflow quickly by queuing audio for background transcription. " +
+                    "Transcript is attached to encounter when ready without physician-verified badge."
+    )
+    @PostMapping(value = "/{encounterId}/ambient/transcribe/background", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> queueAmbientAudioTranscription(
+            @PathVariable UUID encounterId,
+            @RequestPart("audio") MultipartFile audio,
+            @RequestParam(required = false) String language,
+            @RequestParam(required = false) String prompt
+    ) {
+        try {
+            var result = clinicalAiService.queueEncounterAudioTranscription(
+                    encounterId,
+                    audio.getBytes(),
+                    audio.getOriginalFilename(),
+                    audio.getContentType(),
+                    language,
+                    prompt
+            );
+            return ResponseEntity.ok(result);
+        } catch (ClinicalAiService.ClinicalAiException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse("Unable to queue audio transcription: " + e.getMessage()));
+        }
+    }
+
+    @Operation(
             summary = "Generate AI SOAP draft from stored transcript",
             description = "Uses the encounter transcript to generate a structured SOAP draft. Optionally persists as encounter AI draft."
     )
@@ -259,6 +288,23 @@ public class EncounterController {
     ) {
         try {
             Encounter encounter = encounterService.recordPhysicianNote(encounterId, request.note());
+            return ResponseEntity.ok(EncounterResponse.from(encounter));
+        } catch (EncounterService.EncounterException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Record family history",
+            description = "Records physician-entered family history for the active encounter."
+    )
+    @PostMapping("/{encounterId}/family-history")
+    public ResponseEntity<?> recordFamilyHistory(
+            @PathVariable UUID encounterId,
+            @RequestBody FamilyHistoryRequest request
+    ) {
+        try {
+            Encounter encounter = encounterService.recordFamilyHistory(encounterId, request.familyHistory());
             return ResponseEntity.ok(EncounterResponse.from(encounter));
         } catch (EncounterService.EncounterException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
@@ -494,7 +540,7 @@ public class EncounterController {
     @Operation(summary = "Get encounter by ID")
     @GetMapping("/{encounterId}")
     public ResponseEntity<?> getEncounter(@PathVariable UUID encounterId) {
-        Optional<Encounter> encounter = encounterService.findById(encounterId);
+        Optional<Encounter> encounter = encounterService.getEncounterForReading(encounterId);
         if (encounter.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -533,6 +579,17 @@ public class EncounterController {
                 .map(EncounterSummaryResponse::from)
                 .toList();
         return ResponseEntity.ok(summaries);
+    }
+
+    @Operation(summary = "Get physician dashboard metrics")
+    @GetMapping("/dashboard/physician")
+    public ResponseEntity<?> getPhysicianDashboard() {
+        try {
+            EncounterService.PhysicianDashboard dashboard = encounterService.getPhysicianDashboard();
+            return ResponseEntity.ok(dashboard);
+        } catch (EncounterService.EncounterException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
     }
 
     // ==================== ADDENDUMS ====================
@@ -684,6 +741,12 @@ public class EncounterController {
     ) {
     }
 
+    @Schema(description = "Family history request")
+    public record FamilyHistoryRequest(
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String familyHistory
+    ) {
+    }
+
     @Schema(description = "Confirm note request")
     public record ConfirmNoteRequest(
             @Schema(requiredMode = Schema.RequiredMode.REQUIRED) String finalNote,
@@ -764,7 +827,13 @@ public class EncounterController {
             Encounter.EncounterType encounterType,
             Encounter.EncounterStatus status,
             String chiefComplaint,
+            String familyHistory,
             boolean hasTranscript,
+            boolean transcriptPhysicianVerified,
+            Encounter.AmbientTranscriptionStatus ambientTranscriptionStatus,
+            String ambientTranscriptionQueuedAt,
+            String ambientTranscriptionCompletedAt,
+            String ambientTranscriptionError,
             boolean hasAiDraft,
             boolean hasPhysicianNote,
             boolean noteConfirmed,
@@ -775,6 +844,9 @@ public class EncounterController {
             int medicationCount,
             String startedAt,
             String completedAt,
+            String cancellationReason,
+            String cancelledAt,
+            String cancelledBy,
             boolean carePlanAgreementRequired,
             boolean carePlanAgreed,
             String carePlanAgreedAt,
@@ -798,7 +870,13 @@ public class EncounterController {
                     e.getEncounterType(),
                     e.getStatus(),
                     e.getChiefComplaint(),
+                    e.getFamilyHistory(),
                     e.hasTranscript(),
+                    e.isTranscriptPhysicianVerified(),
+                    e.getAmbientTranscriptionStatus(),
+                    e.getAmbientTranscriptionQueuedAt() != null ? e.getAmbientTranscriptionQueuedAt().toString() : null,
+                    e.getAmbientTranscriptionCompletedAt() != null ? e.getAmbientTranscriptionCompletedAt().toString() : null,
+                    e.getAmbientTranscriptionError(),
                     e.hasAiDraft(),
                     e.hasPhysicianNote(),
                     e.isNoteConfirmed(),
@@ -809,6 +887,9 @@ public class EncounterController {
                     e.getMedicationOrders().size(),
                     e.getStartedAt().toString(),
                     e.getCompletedAt() != null ? e.getCompletedAt().toString() : null,
+                    e.getCancellationReason(),
+                    e.getCancelledAt() != null ? e.getCancelledAt().toString() : null,
+                    e.getCancelledBy(),
                     e.isCarePlanAgreementRequired(),
                     e.isCarePlanAgreed(),
                     e.getCarePlanAgreedAt() != null ? e.getCarePlanAgreedAt().toString() : null,
@@ -893,5 +974,3 @@ public class EncounterController {
     public record ErrorResponse(String error) {
     }
 }
-
-

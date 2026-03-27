@@ -759,6 +759,15 @@ public class QueueController {
             @Schema(description = "Ticket number", example = "A-001")
             String ticketNumber,
 
+            @Schema(description = "Date-stamped tracking reference", example = "20260314-WK-001")
+            String trackingNumber,
+
+            @Schema(description = "Permanent patient number (MRN)", example = "02459317")
+            String patientNumber,
+
+            @Schema(description = "Identifier to display in current workflow step")
+            String workflowNumber,
+
             @Schema(description = "Queue category")
             QueueTicket.QueueCategory category,
 
@@ -894,6 +903,9 @@ public class QueueController {
                     t.getPatientId(),
                     t.getQueueDate(),
                     t.getTicketNumber(),
+                    t.getTrackingNumber(),
+                    t.getPatientMrnSnapshot(),
+                    resolveWorkflowNumber(t),
                     t.getCategory(),
                     t.getTriageLevel(),
                     t.getStatus(),
@@ -937,7 +949,19 @@ public class QueueController {
                     t.getClinicianHandoffAcceptedByStaffName()
             );
         }
+
+        private static String resolveWorkflowNumber(QueueTicket ticket) {
+            String patientNumber = ticket.getPatientMrnSnapshot();
+            if (ticket.isTriaged() && patientNumber != null && !patientNumber.isBlank()) {
+                return patientNumber;
+            }
+
+            String trackingNumber = ticket.getTrackingNumber();
+            if (trackingNumber != null && !trackingNumber.isBlank()) {
+                return trackingNumber;
+            }
+            return ticket.getTicketNumber();
+        }
     }
 }
-
 

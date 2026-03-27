@@ -25,10 +25,10 @@ public class JwtService {
     private final long kioskExpirationMinutes;
 
     public JwtService(
-            @Value("${base.jwt.secret:your-256-bit-secret-key-for-jwt-signing-min-32-chars}") String secret,
-            @Value("${base.jwt.staff-expiration-hours:12}") long staffExpirationHours,
-            @Value("${base.jwt.patient-expiration-hours:24}") long patientExpirationHours,
-            @Value("${base.jwt.kiosk-expiration-minutes:10}") long kioskExpirationMinutes
+            @Value("${dalili.jwt.secret:${base.jwt.secret:your-256-bit-secret-key-for-jwt-signing-min-32-chars}}") String secret,
+            @Value("${dalili.jwt.staff-expiration-hours:${base.jwt.staff-expiration-hours:12}}") long staffExpirationHours,
+            @Value("${dalili.jwt.patient-expiration-hours:${base.jwt.patient-expiration-hours:24}}") long patientExpirationHours,
+            @Value("${dalili.jwt.kiosk-expiration-minutes:${base.jwt.kiosk-expiration-minutes:10}}") long kioskExpirationMinutes
     ) {
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.staffExpirationHours = staffExpirationHours;

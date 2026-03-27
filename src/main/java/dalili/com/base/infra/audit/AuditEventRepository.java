@@ -1,5 +1,6 @@
 package dalili.com.base.infra.audit;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -15,4 +16,6 @@ public interface AuditEventRepository extends JpaRepository<AuditEvent, UUID> {
 
     // For verifying the audit chain end-to-end
     List<AuditEvent> findAllByOrderByTimestampAsc();
+
+    List<AuditEvent> findAllByOrderByTimestampDesc(Pageable pageable);
 }

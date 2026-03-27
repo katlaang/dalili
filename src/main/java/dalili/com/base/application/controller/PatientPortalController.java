@@ -187,6 +187,23 @@ public class PatientPortalController {
         }
     }
 
+    @PutMapping("/profile/emergency-contact")
+    public ResponseEntity<?> updateProfileEmergencyContact(@RequestBody UpdateEmergencyContactRequest request) {
+        try {
+            auditGuard.assertSessionActive();
+            UUID patientId = requirePatientSession();
+            Patient updated = patientService.updateEmergencyContact(
+                    patientId,
+                    request.name(),
+                    request.phone()
+            );
+            auditPatientView(patientId, "PROFILE_UPDATE", "Patient updated emergency contact");
+            return ResponseEntity.ok(PatientProfileView.from(updated));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
     @GetMapping("/queue")
     public ResponseEntity<?> getQueue() {
         try {
@@ -582,6 +599,7 @@ public class PatientPortalController {
     public record QueueTicketView(
             UUID id,
             String ticketNumber,
+            String trackingNumber,
             String category,
             String triageLevel,
             String status,
@@ -611,6 +629,7 @@ public class PatientPortalController {
             return new QueueTicketView(
                     ticket.getId(),
                     ticket.getTicketNumber(),
+                    ticket.getTrackingNumber(),
                     ticket.getCategory().name(),
                     ticket.getTriageLevel().name(),
                     ticket.getStatus().name(),
@@ -954,6 +973,10 @@ public class PatientPortalController {
             Boolean consentForDataAccess
     ) {
     }
+
+    public record UpdateEmergencyContactRequest(
+            String name,
+            String phone
+    ) {
+    }
 }
-
-

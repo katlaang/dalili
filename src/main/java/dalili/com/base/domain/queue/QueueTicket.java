@@ -6,6 +6,7 @@ import lombok.Getter;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
 
@@ -108,6 +109,24 @@ public class QueueTicket {
      */
     @Column(length = 500)
     private String initialComplaint;
+
+    /**
+     * Snapshot of patient MRN captured at ticket issuance.
+     */
+    @Column(length = 120)
+    private String patientMrnSnapshot;
+
+    /**
+     * Snapshot of patient full name captured at ticket issuance.
+     */
+    @Column(length = 255)
+    private String patientNameSnapshot;
+
+    /**
+     * Snapshot of patient DOB captured at ticket issuance.
+     */
+    @Column
+    private LocalDate patientDateOfBirthSnapshot;
 
     /**
      * Flag indicating triage assessment has been completed.
@@ -424,6 +443,24 @@ public class QueueTicket {
                 false
         );
         return ticket;
+    }
+
+    public void capturePatientSnapshot(String mrn, String fullName, LocalDate dateOfBirth) {
+        this.patientMrnSnapshot = sanitizeText(mrn, 120);
+        this.patientNameSnapshot = sanitizeText(fullName, 255);
+        this.patientDateOfBirthSnapshot = dateOfBirth;
+    }
+
+    /**
+     * Date-stamped reference that disambiguates repeating daily queue numbers.
+     *
+     * <p>Example: 20260314-WK-001.</p>
+     */
+    public String getTrackingNumber() {
+        if (queueDate == null || ticketNumber == null || ticketNumber.isBlank()) {
+            return ticketNumber;
+        }
+        return queueDate.format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + ticketNumber;
     }
 
     // ==================== TRIAGE UPDATES ====================

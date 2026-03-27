@@ -14,20 +14,24 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+    private static final String EMAIL_REGEX = "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$";
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final SessionActivityService sessionActivityService;
     private final PatientService patientService;
-    private final String clinicName;
+    private final Set<String> allowedClinicNames;
     private final boolean kioskAutoProvisionDefault;
     private final String defaultKioskDeviceId;
     private final String defaultKioskDeviceSecret;
@@ -40,6 +44,7 @@ public class AuthService {
             SessionActivityService sessionActivityService,
             PatientService patientService,
             @Value("${dalili.clinic.name:Dalili Health Clinic}") String clinicName,
+            @Value("${dalili.clinic.allowed-names:}") String allowedClinicNamesRaw,
             @Value("${dalili.kiosk.auto-provision-default:true}") boolean kioskAutoProvisionDefault,
             @Value("${dalili.kiosk.default-device-id:kiosk-front-desk-1}") String defaultKioskDeviceId,
             @Value("${dalili.kiosk.default-device-secret:kiosk-secret-change-me}") String defaultKioskDeviceSecret,
@@ -50,7 +55,7 @@ public class AuthService {
         this.jwtService = jwtService;
         this.sessionActivityService = sessionActivityService;
         this.patientService = patientService;
-        this.clinicName = clinicName;
+        this.allowedClinicNames = parseAllowedClinicNames(clinicName, allowedClinicNamesRaw);
         this.kioskAutoProvisionDefault = kioskAutoProvisionDefault;
         this.defaultKioskDeviceId = defaultKioskDeviceId;
         this.defaultKioskDeviceSecret = defaultKioskDeviceSecret;
@@ -61,7 +66,8 @@ public class AuthService {
      * Staff login
      */
     public String loginStaff(String username, String password) {
-        User user = userRepository.findByUsernameAndActiveTrue(username)
+        String normalizedUsername = normalizeUsername(username);
+        User user = userRepository.findByUsernameIgnoreCaseAndActiveTrue(normalizedUsername)
                 .orElseThrow(() -> new AuthenticationException("Invalid credentials"));
 
         if (!user.isStaff()) {
@@ -85,7 +91,8 @@ public class AuthService {
      * Patient login (for patient portal/app)
      */
     public String loginPatient(String username, String password) {
-        User user = userRepository.findByUsernameAndActiveTrue(username)
+        String normalizedUsername = normalizeUsername(username);
+        User user = userRepository.findByUsernameIgnoreCaseAndActiveTrue(normalizedUsername)
                 .orElseThrow(() -> new AuthenticationException("Invalid credentials"));
 
         if (!user.isPatient()) {
@@ -187,16 +194,35 @@ public class AuthService {
     /**
      * Register staff user
      */
-    public User registerStaff(String username, String password, String fullName, Role role) {
+    public User registerStaff(
+            String username,
+            String password,
+            String firstName,
+            String lastName,
+            String email,
+            Role role
+    ) {
         if (role == Role.PATIENT || role == Role.KIOSK || role == Role.SYSTEM || role == Role.ADMIN || role == Role.SUPER_ADMIN) {
             throw new AuthenticationException("Invalid role for staff registration");
         }
 
-        if (userRepository.findByUsername(username).isPresent()) {
-            throw new AuthenticationException("Username already exists");
-        }
+        validatePersonName(firstName, lastName);
+        validatePassword(password);
+        validateUsername(username);
+        String normalizedUsername = normalizeUsername(username);
+        String normalizedEmail = normalizeEmail(email);
+        validateUsernamePrefix(role, normalizedUsername);
+        assertUsernameAvailable(normalizedUsername);
+        assertEmailAvailable(normalizedEmail);
 
-        User user = User.createStaff(username, passwordEncoder.encode(password), fullName, role);
+        User user = User.createStaff(
+                normalizedUsername,
+                passwordEncoder.encode(password),
+                firstName.trim(),
+                lastName.trim(),
+                normalizedEmail,
+                role
+        );
         User saved = userRepository.save(user);
         log.info("Staff user registered userId={} role={}", saved.getId(), saved.getRole());
         return saved;
@@ -206,15 +232,34 @@ public class AuthService {
      * Bootstrap the first super admin account.
      * This flow is intended for initial system setup only.
      */
-    public User bootstrapFirstSuperAdmin(String fullName, String password, String company) {
-        validateAdminRegistrationInput(fullName, password, company);
+    public User bootstrapFirstSuperAdmin(
+            String username,
+            String firstName,
+            String lastName,
+            String email,
+            String password,
+            String company
+    ) {
+        validateAdminRegistrationInput(username, firstName, lastName, email, password, company);
 
         if (userRepository.countByRoleAndActiveTrue(Role.SUPER_ADMIN) > 0) {
             throw new AuthenticationException("Super admin already exists");
         }
 
-        String username = generateUniqueUsername("super-admin", fullName);
-        User user = User.createStaff(username, passwordEncoder.encode(password), fullName.trim(), Role.SUPER_ADMIN);
+        String normalizedUsername = normalizeUsername(username);
+        String normalizedEmail = normalizeEmail(email);
+        validateUsernamePrefix(Role.SUPER_ADMIN, normalizedUsername);
+        assertUsernameAvailable(normalizedUsername);
+        assertEmailAvailable(normalizedEmail);
+
+        User user = User.createStaff(
+                normalizedUsername,
+                passwordEncoder.encode(password),
+                firstName.trim(),
+                lastName.trim(),
+                normalizedEmail,
+                Role.SUPER_ADMIN
+        );
         User saved = userRepository.save(user);
         log.info("Initial super admin bootstrapped userId={} username={}", saved.getId(), saved.getUsername());
         return saved;
@@ -224,30 +269,59 @@ public class AuthService {
      * Register a new admin account.
      * Access control for this method is enforced at controller/security level.
      */
-    public User registerAdmin(String fullName, String password, String company) {
-        validateAdminRegistrationInput(fullName, password, company);
+    public User registerAdmin(
+            String username,
+            String firstName,
+            String lastName,
+            String email,
+            String password,
+            String company
+    ) {
+        validateAdminRegistrationInput(username, firstName, lastName, email, password, company);
 
-        String username = generateUniqueUsername("admin", fullName);
-        User user = User.createStaff(username, passwordEncoder.encode(password), fullName.trim(), Role.ADMIN);
+        String normalizedUsername = normalizeUsername(username);
+        String normalizedEmail = normalizeEmail(email);
+        validateUsernamePrefix(Role.ADMIN, normalizedUsername);
+        assertUsernameAvailable(normalizedUsername);
+        assertEmailAvailable(normalizedEmail);
+
+        User user = User.createStaff(
+                normalizedUsername,
+                passwordEncoder.encode(password),
+                firstName.trim(),
+                lastName.trim(),
+                normalizedEmail,
+                Role.ADMIN
+        );
         User saved = userRepository.save(user);
         log.info("Admin account registered userId={} username={}", saved.getId(), saved.getUsername());
         return saved;
     }
 
     /**
+     * Returns true only when no active super-admin account exists.
+     */
+    public boolean isSuperAdminBootstrapAllowed() {
+        return userRepository.countByRoleAndActiveTrue(Role.SUPER_ADMIN) == 0;
+    }
+
+    /**
      * Register patient user (links to existing Patient record)
      */
     public User registerPatientUser(String username, String password, UUID patientId) {
-        if (userRepository.findByUsername(username).isPresent()) {
-            throw new AuthenticationException("Username already exists");
-        }
+        validatePassword(password);
+        validateUsername(username);
+        String normalizedUsername = normalizeUsername(username);
+        assertUsernameAvailable(normalizedUsername);
 
         Patient patient = patientService.findById(patientId);
 
         User user = User.createPatient(
-                username,
+                normalizedUsername,
                 passwordEncoder.encode(password),
-                patient.getFullName(),
+                patient.getGivenName(),
+                patient.getFamilyName(),
+                null,
                 patientId
         );
         User saved = userRepository.save(user);
@@ -277,20 +351,67 @@ public class AuthService {
         log.info("Session logout completed sessionId={}", sessionId);
     }
 
-    private void validateAdminRegistrationInput(String fullName, String password, String company) {
-        if (isBlank(fullName) || fullName.trim().length() < 2) {
-            throw new AuthenticationException("Name is required");
-        }
-        if (isBlank(password) || password.length() < 8) {
-            throw new AuthenticationException("Password must be at least 8 characters");
-        }
+    private void validateAdminRegistrationInput(
+            String username,
+            String firstName,
+            String lastName,
+            String email,
+            String password,
+            String company
+    ) {
+        validatePersonName(firstName, lastName);
+        validateUsername(username);
+        validateEmail(email);
+        validatePassword(password);
         if (isBlank(company)) {
             throw new AuthenticationException("Company is required");
         }
 
-        String expectedCompany = clinicName == null ? "" : clinicName.trim();
-        if (!expectedCompany.equalsIgnoreCase(company.trim())) {
-            throw new AuthenticationException("Company does not match this deployment");
+        if (!isCompanyAllowed(company)) {
+            throw new AuthenticationException("Company is not configured for this deployment");
+        }
+    }
+
+    private void validatePersonName(String firstName, String lastName) {
+        if (isBlank(firstName) || firstName.trim().length() < 2) {
+            throw new AuthenticationException("First name is required");
+        }
+        if (isBlank(lastName) || lastName.trim().length() < 2) {
+            throw new AuthenticationException("Last name is required");
+        }
+    }
+
+    private void validatePassword(String password) {
+        if (isBlank(password) || password.length() < 8) {
+            throw new AuthenticationException("Password must be at least 8 characters");
+        }
+    }
+
+    private void validateUsername(String username) {
+        if (isBlank(username) || username.trim().length() < 3) {
+            throw new AuthenticationException("Username must be at least 3 characters");
+        }
+    }
+
+    private void validateEmail(String email) {
+        if (isBlank(email)) {
+            throw new AuthenticationException("Email is required");
+        }
+        String normalized = email.trim().toLowerCase();
+        if (!normalized.matches(EMAIL_REGEX)) {
+            throw new AuthenticationException("Email format is invalid");
+        }
+    }
+
+    private void assertUsernameAvailable(String username) {
+        if (userRepository.findByUsernameIgnoreCase(username).isPresent()) {
+            throw new AuthenticationException("Username already exists");
+        }
+    }
+
+    private void assertEmailAvailable(String email) {
+        if (userRepository.findByEmailIgnoreCase(email).isPresent()) {
+            throw new AuthenticationException("Email already exists");
         }
     }
 
@@ -341,30 +462,70 @@ public class AuthService {
         }
     }
 
-    private String generateUniqueUsername(String prefix, String fullName) {
-        String normalized = fullName == null ? "" : fullName.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-")
-                .replaceAll("^-+", "")
-                .replaceAll("-+$", "");
-
-        if (normalized.isBlank()) {
-            normalized = "user";
+    private String normalizeUsername(String username) {
+        if (username == null) {
+            return "";
         }
+        return username.trim().toLowerCase();
+    }
 
-        String base = prefix + "-" + normalized;
-        String candidate = base;
-        int counter = 2;
+    private String normalizeEmail(String email) {
+        validateEmail(email);
+        return email.trim().toLowerCase();
+    }
 
-        while (userRepository.findByUsername(candidate).isPresent()) {
-            candidate = base + "-" + counter;
-            counter++;
+    private void validateUsernamePrefix(Role role, String normalizedUsername) {
+        String requiredPrefix = requiredPrefixForRole(role);
+        if (requiredPrefix == null || requiredPrefix.isBlank()) {
+            return;
         }
+        if (normalizedUsername == null || normalizedUsername.isBlank()) {
+            throw new AuthenticationException("Username is required");
+        }
+        String upperUsername = normalizedUsername.toUpperCase(Locale.ROOT);
+        if (!upperUsername.startsWith(requiredPrefix)) {
+            throw new AuthenticationException("Username must start with " + requiredPrefix + " for role " + role.name());
+        }
+    }
 
-        return candidate;
+    private String requiredPrefixForRole(Role role) {
+        return switch (role) {
+            case SUPER_ADMIN -> "SA";
+            case ADMIN -> "AD";
+            case NURSE -> "NS";
+            case PHYSICIAN -> "CL";
+            case RECEPTIONIST -> "RC";
+            default -> null;
+        };
     }
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    private Set<String> parseAllowedClinicNames(String clinicName, String allowedClinicNamesRaw) {
+        Set<String> configured = Arrays.stream((allowedClinicNamesRaw == null ? "" : allowedClinicNamesRaw).split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .map(value -> value.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+
+        if (!configured.isEmpty()) {
+            return configured;
+        }
+
+        if (clinicName != null && !clinicName.trim().isBlank()) {
+            return Set.of(clinicName.trim().toLowerCase(Locale.ROOT));
+        }
+
+        return Set.of();
+    }
+
+    private boolean isCompanyAllowed(String company) {
+        if (allowedClinicNames.isEmpty()) {
+            return true;
+        }
+        return allowedClinicNames.contains(company.trim().toLowerCase(Locale.ROOT));
     }
 
     public static class AuthenticationException extends RuntimeException {

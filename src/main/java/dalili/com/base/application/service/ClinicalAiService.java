@@ -1,5 +1,6 @@
 package dalili.com.base.application.service;
 
+import dalili.com.base.ambient.session.SessionContext;
 import dalili.com.base.domain.ai.*;
 import dalili.com.base.domain.encounter.model.Encounter;
 import dalili.com.base.domain.encounter.repository.EncounterRepository;
@@ -34,9 +35,11 @@ public class ClinicalAiService {
     private final DifferentialService differentialService;
     private final SoapExtractionService soapExtractionService;
     private final AmbientTranscriptionService ambientTranscriptionService;
+    private final NoteComparisonService noteComparisonService;
     private final TriageCalculator triageCalculator;
     private final AuditService auditService;
     private final AuditGuard auditGuard;
+    private final SessionContext sessionContext;
 
     public ClinicalAiService(
             EncounterRepository encounterRepository,
@@ -46,9 +49,11 @@ public class ClinicalAiService {
             DifferentialService differentialService,
             SoapExtractionService soapExtractionService,
             AmbientTranscriptionService ambientTranscriptionService,
+            NoteComparisonService noteComparisonService,
             TriageCalculator triageCalculator,
             AuditService auditService,
-            AuditGuard auditGuard
+            AuditGuard auditGuard,
+            SessionContext sessionContext
     ) {
         this.encounterRepository = encounterRepository;
         this.triageRepository = triageRepository;
@@ -57,9 +62,11 @@ public class ClinicalAiService {
         this.differentialService = differentialService;
         this.soapExtractionService = soapExtractionService;
         this.ambientTranscriptionService = ambientTranscriptionService;
+        this.noteComparisonService = noteComparisonService;
         this.triageCalculator = triageCalculator;
         this.auditService = auditService;
         this.auditGuard = auditGuard;
+        this.sessionContext = sessionContext;
     }
 
     public AmbientTranscriptionService.TranscriptionResult transcribeEncounterAudio(
@@ -89,6 +96,59 @@ public class ClinicalAiService {
         log.info("Ambient transcription completed encounterId={} available={} latencyMs={}",
                 encounterId, result.available(), result.latencyMs());
         return result;
+    }
+
+    public BackgroundTranscriptionQueuedResult queueEncounterAudioTranscription(
+            UUID encounterId,
+            byte[] audioBytes,
+            String fileName,
+            String mimeType,
+            String language,
+            String prompt
+    ) {
+        auditGuard.assertSessionActive();
+
+        if (audioBytes == null || audioBytes.length == 0) {
+            throw new ClinicalAiException("Audio payload is empty");
+        }
+
+        Encounter encounter = findEncounterOrThrow(encounterId);
+        if (encounter.hasTranscript()) {
+            throw new ClinicalAiException("Transcript already exists for this encounter");
+        }
+
+        try {
+            encounter.queueAmbientTranscription();
+            encounterRepository.save(encounter);
+        } catch (IllegalStateException e) {
+            throw new ClinicalAiException(e.getMessage());
+        }
+
+        String requestedBy = sessionContext.username() != null ? sessionContext.username() : "unknown";
+        auditService.record(
+                "AMBIENT_TRANSCRIPTION_QUEUED",
+                encounter.getPatientId(),
+                "Background transcription queued by " + requestedBy
+        );
+
+        byte[] payloadCopy = Arrays.copyOf(audioBytes, audioBytes.length);
+        java.util.concurrent.CompletableFuture.runAsync(() -> processBackgroundTranscription(
+                encounterId,
+                payloadCopy,
+                fileName,
+                mimeType,
+                language,
+                prompt,
+                requestedBy
+        ));
+
+        return new BackgroundTranscriptionQueuedResult(
+                encounterId,
+                "QUEUED",
+                true,
+                Instant.now(),
+                "Audio saved for background transcription and encounter can be completed."
+        );
     }
 
     @Transactional
@@ -273,6 +333,194 @@ public class ClinicalAiService {
                 .orElseThrow(() -> new ClinicalAiException("Encounter not found"));
     }
 
+    private void processBackgroundTranscription(
+            UUID encounterId,
+            byte[] audioBytes,
+            String fileName,
+            String mimeType,
+            String language,
+            String prompt,
+            String requestedBy
+    ) {
+        Encounter encounter = null;
+        try {
+            encounter = findEncounterOrThrow(encounterId);
+            encounter.markAmbientTranscriptionProcessing();
+            encounterRepository.save(encounter);
+
+            AmbientTranscriptionService.TranscriptionResult result = ambientTranscriptionService.transcribe(
+                    audioBytes,
+                    fileName,
+                    mimeType,
+                    language,
+                    prompt
+            );
+
+            Encounter refreshed = findEncounterOrThrow(encounterId);
+            if (!result.available() || result.transcript() == null || result.transcript().isBlank()) {
+                String failure = result.errorMessage() != null && !result.errorMessage().isBlank()
+                        ? result.errorMessage()
+                        : "Ambient transcription returned no text";
+                refreshed.markAmbientTranscriptionFailed(failure);
+                encounterRepository.save(refreshed);
+                auditService.record(
+                        "AMBIENT_TRANSCRIPTION_BACKGROUND_FAILED",
+                        refreshed.getPatientId(),
+                        "Background transcription failed for encounter " + encounterId + ": " + failure
+                );
+                return;
+            }
+
+            boolean attachedTranscript = false;
+            try {
+                refreshed.recordBackgroundTranscript(result.transcript());
+                attachedTranscript = true;
+            } catch (IllegalStateException | IllegalArgumentException e) {
+                if (refreshed.hasTranscript()) {
+                    refreshed.markAmbientTranscriptionCompletedWithoutAttachment();
+                } else {
+                    refreshed.markAmbientTranscriptionFailed(e.getMessage());
+                }
+            }
+
+            if (attachedTranscript
+                    && refreshed.isNoteConfirmed()
+                    && refreshed.getFinalNote() != null
+                    && !refreshed.getFinalNote().isBlank()) {
+                TranscriptAssessment assessment = assessTranscriptAgainstFinalNote(
+                        refreshed.getTranscript(),
+                        refreshed.getAiDraftNote(),
+                        refreshed.getFinalNote()
+                );
+                refreshed.applySystemTranscriptAssessment(
+                        assessment.rating(),
+                        assessment.score(),
+                        assessment.summary()
+                );
+            }
+
+            encounterRepository.save(refreshed);
+            auditService.record(
+                    "AMBIENT_TRANSCRIPTION_BACKGROUND_COMPLETED",
+                    refreshed.getPatientId(),
+                    attachedTranscript
+                            ? "Background transcript attached to encounter " + encounterId + " (requestedBy=" + requestedBy + ")"
+                            : "Background transcript completed but could not attach (requestedBy=" + requestedBy + ")"
+            );
+        } catch (Exception e) {
+            log.error("Background transcription processing failed encounterId={}", encounterId, e);
+            if (encounter != null) {
+                try {
+                    encounter.markAmbientTranscriptionFailed(e.getMessage());
+                    encounterRepository.save(encounter);
+                    auditService.record(
+                            "AMBIENT_TRANSCRIPTION_BACKGROUND_FAILED",
+                            encounter.getPatientId(),
+                            "Background transcription exception for encounter " + encounterId + ": " + e.getMessage()
+                    );
+                } catch (Exception inner) {
+                    log.error("Failed to persist background transcription failure state encounterId={}", encounterId, inner);
+                }
+            }
+        }
+    }
+
+    private TranscriptAssessment assessTranscriptAgainstFinalNote(
+            String transcript,
+            String aiDraftNote,
+            String finalNote
+    ) {
+        NoteComparisonService.ComparisonResult aiResult = noteComparisonService.compare(transcript, aiDraftNote, finalNote);
+        if (aiResult.available()) {
+            return new TranscriptAssessment(
+                    mapComparisonRating(aiResult.rating()),
+                    aiResult.score(),
+                    aiResult.summary()
+            );
+        }
+        return heuristicAssessment(transcript, finalNote, aiResult.errorMessage());
+    }
+
+    private TranscriptAssessment heuristicAssessment(String transcript, String finalNote, String aiErrorMessage) {
+        if (transcript == null || transcript.isBlank()) {
+            return new TranscriptAssessment(
+                    Encounter.NoteAccuracyRating.NOT_ASSESSED,
+                    null,
+                    "No transcript available for discrepancy analysis."
+            );
+        }
+
+        Set<String> transcriptTokens = tokenizeClinicalTerms(transcript);
+        Set<String> finalNoteTokens = tokenizeClinicalTerms(finalNote);
+        if (transcriptTokens.isEmpty()) {
+            return new TranscriptAssessment(
+                    Encounter.NoteAccuracyRating.NOT_ASSESSED,
+                    null,
+                    "Transcript did not contain enough clinical terms for scoring."
+            );
+        }
+
+        Set<String> intersection = new HashSet<>(transcriptTokens);
+        intersection.retainAll(finalNoteTokens);
+        int score = (int) Math.round((intersection.size() * 100.0) / transcriptTokens.size());
+        Encounter.NoteAccuracyRating rating = mapScoreToRating(score);
+
+        Set<String> missing = new HashSet<>(transcriptTokens);
+        missing.removeAll(finalNoteTokens);
+        List<String> topMissing = missing.stream().limit(12).toList();
+        String summary = topMissing.isEmpty()
+                ? "No major transcript term discrepancies detected."
+                : "Potentially missing transcript terms in final note: " + String.join(", ", topMissing);
+        if (aiErrorMessage != null && !aiErrorMessage.isBlank()) {
+            summary = summary + " AI comparison unavailable; local fallback used. Reason: " + aiErrorMessage;
+        }
+
+        return new TranscriptAssessment(rating, score, summary);
+    }
+
+    private Set<String> tokenizeClinicalTerms(String text) {
+        if (text == null || text.isBlank()) {
+            return Set.of();
+        }
+
+        Set<String> stopWords = Set.of(
+                "the", "and", "for", "with", "that", "this", "have", "from", "were", "been",
+                "patient", "reports", "report", "today", "history", "present", "past", "normal",
+                "note", "notes", "assessment", "plan", "review", "follow", "clinic", "hospital"
+        );
+
+        Set<String> tokens = new HashSet<>();
+        Arrays.stream(text.toLowerCase().split("[^a-z0-9]+"))
+                .map(String::trim)
+                .filter(token -> token.length() >= 3)
+                .filter(token -> !stopWords.contains(token))
+                .forEach(tokens::add);
+        return tokens;
+    }
+
+    private Encounter.NoteAccuracyRating mapComparisonRating(NoteComparisonService.ComparisonRating rating) {
+        return switch (rating) {
+            case ACCURATE -> Encounter.NoteAccuracyRating.ACCURATE;
+            case MINOR_EDITS -> Encounter.NoteAccuracyRating.MINOR_EDITS;
+            case MAJOR_EDITS -> Encounter.NoteAccuracyRating.MAJOR_EDITS;
+            case UNSAFE -> Encounter.NoteAccuracyRating.UNSAFE;
+            case NOT_ASSESSED -> Encounter.NoteAccuracyRating.NOT_ASSESSED;
+        };
+    }
+
+    private Encounter.NoteAccuracyRating mapScoreToRating(int score) {
+        if (score >= 80) {
+            return Encounter.NoteAccuracyRating.ACCURATE;
+        }
+        if (score >= 60) {
+            return Encounter.NoteAccuracyRating.MINOR_EDITS;
+        }
+        if (score >= 35) {
+            return Encounter.NoteAccuracyRating.MAJOR_EDITS;
+        }
+        return Encounter.NoteAccuracyRating.UNSAFE;
+    }
+
     private Optional<TriageAssessment> resolveTriage(Encounter encounter) {
         if (encounter.getTriageAssessmentId() != null) {
             return triageRepository.findById(encounter.getTriageAssessmentId());
@@ -443,11 +691,25 @@ public class ClinicalAiService {
     ) {
     }
 
+    public record BackgroundTranscriptionQueuedResult(
+            UUID encounterId,
+            String status,
+            boolean background,
+            Instant queuedAt,
+            String message
+    ) {
+    }
+
+    private record TranscriptAssessment(
+            Encounter.NoteAccuracyRating rating,
+            Integer score,
+            String summary
+    ) {
+    }
+
     public static class ClinicalAiException extends RuntimeException {
         public ClinicalAiException(String message) {
             super(message);
         }
     }
 }
-
-

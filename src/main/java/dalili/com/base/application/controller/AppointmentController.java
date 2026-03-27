@@ -54,6 +54,7 @@ public class AppointmentController {
     }
 
     private AppointmentView toView(Appointment appointment) {
+        Role currentRole = sessionContext.role();
         String patientName = null;
         try {
             patientName = patientService.findById(appointment.getPatientId()).getFullName();
@@ -88,7 +89,7 @@ public class AppointmentController {
                 appointment.getDepartmentName(),
                 facilityCode,
                 facilityName,
-                appointment.getReason(),
+                currentRole == Role.RECEPTIONIST ? null : appointment.getReason(),
                 formatInstant(appointment.getCheckedInAt()),
                 appointment.getQueueTicketId(),
                 appointment.getDeactivationReason()
@@ -99,6 +100,8 @@ public class AppointmentController {
     public ResponseEntity<?> scheduleAppointment(@RequestBody ScheduleRequest request) {
         try {
             auditGuard.assertSessionActive();
+            Role currentRole = sessionContext.role();
+            String schedulingReason = currentRole == Role.RECEPTIONIST ? null : request.reason();
             Appointment appointment = appointmentService.scheduleAppointment(new AppointmentService.ScheduleInput(
                     request.patientId(),
                     request.scheduledAt(),
@@ -108,7 +111,7 @@ public class AppointmentController {
                     request.clinicianEmployeeId(),
                     request.departmentCode(),
                     request.departmentName(),
-                    request.reason()
+                    schedulingReason
             ));
             log.info("Appointment scheduled via API appointmentId={} patientId={}", appointment.getId(), appointment.getPatientId());
             return ResponseEntity.ok(toView(appointment));
@@ -158,10 +161,12 @@ public class AppointmentController {
                 patientDataAccessService.recordPatientConsent(request.patientId());
             }
 
+            Role currentRole = sessionContext.role();
+            String intakeComplaint = currentRole == Role.RECEPTIONIST ? null : request.complaint();
             AppointmentService.AppointmentCheckInResult result = appointmentService.checkInAppointment(
                     request.patientId(),
                     appointmentId,
-                    request.complaint()
+                    intakeComplaint
             );
             log.info("Appointment check-in via staff API appointmentId={} patientId={}",
                     appointmentId, request.patientId());

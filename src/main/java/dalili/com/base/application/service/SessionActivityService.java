@@ -27,8 +27,8 @@ public class SessionActivityService {
     public SessionActivityService(
             ActiveSessionRepository activeSessionRepository,
             KioskSessionRepository kioskSessionRepository,
-            @Value("${base.session.patient-inactivity-seconds:300}") long patientInactivitySeconds,
-            @Value("${base.session.staff-inactivity-seconds:1800}") long staffInactivitySeconds
+            @Value("${dalili.session.patient-inactivity-seconds:300}") long patientInactivitySeconds,
+            @Value("${dalili.session.staff-inactivity-seconds:300}") long staffInactivitySeconds
     ) {
         this.activeSessionRepository = activeSessionRepository;
         this.kioskSessionRepository = kioskSessionRepository;

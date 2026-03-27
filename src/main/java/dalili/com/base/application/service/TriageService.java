@@ -267,6 +267,17 @@ public class TriageService {
         if (observations.nursingNotes() != null) {
             assessment.recordNursingNotes(observations.nursingNotes());
         }
+        if (observations.emergencyContactName() != null || observations.emergencyContactPhone() != null) {
+            assessment.recordEmergencyContact(
+                    observations.emergencyContactName(),
+                    observations.emergencyContactPhone()
+            );
+            patientService.updateEmergencyContact(
+                    assessment.getPatientId(),
+                    observations.emergencyContactName(),
+                    observations.emergencyContactPhone()
+            );
+        }
 
         assessment = triageRepository.save(assessment);
 
@@ -403,7 +414,9 @@ public class TriageService {
             String allergies,
             String currentMedications,
             String pastMedicalHistory,
-            String nursingNotes
+            String nursingNotes,
+            String emergencyContactName,
+            String emergencyContactPhone
     ) {
     }
 

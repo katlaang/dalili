@@ -1,0 +1,68 @@
+services:
+  caddy:
+    image: caddy:2
+    container_name: dalili-caddy
+    depends_on:
+      - app
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dalili-backend:latest
+    container_name: dalili-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8181
+      DALILI_STORAGE_DIR: ${DALILI_STORAGE_DIR}
+      DALILI_AUDIT_DEVICE_ID: ${DALILI_AUDIT_DEVICE_ID}
+      DALILI_AUDIT_SKIP_VERIFICATION: ${DALILI_AUDIT_SKIP_VERIFICATION}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO}
+      DALILI_JWT_SECRET: ${DALILI_JWT_SECRET}
+      DALILI_SECURITY_ALLOWED_ORIGINS: ${DALILI_SECURITY_ALLOWED_ORIGINS}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      DALILI_KIOSK_DEFAULT_DEVICE_ID: ${DALILI_KIOSK_DEFAULT_DEVICE_ID}
+      DALILI_KIOSK_DEFAULT_DEVICE_SECRET: ${DALILI_KIOSK_DEFAULT_DEVICE_SECRET}
+    expose:
+      - "8181"
+    restart: unless-stopped
+    volumes:
+      - dalili-storage:${DALILI_STORAGE_DIR}
+
+  db:
+    image: postgres:17
+    container_name: dalili-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  caddy-config:
+  caddy-data:
+  dalili-storage:
+  postgres-data:

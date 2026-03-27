@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gradle
+.idea
+build
+!build/libs/
+!build/libs/*.jar
+frontend
+Documents
+*.db
+*.log
+*.zip
+src/main/resources/application-local.yml

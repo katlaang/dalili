@@ -317,6 +317,30 @@ public class QueueTicket {
     private String admissionReason;
 
     /**
+     * Whether the patient is on ancillary hold awaiting another step before clinician review.
+     */
+    @Column(nullable = false)
+    private boolean ancillaryHold = false;
+
+    /**
+     * Reason for ancillary hold.
+     */
+    @Column(length = 255)
+    private String ancillaryHoldReason;
+
+    /**
+     * Timestamp when ancillary hold was applied.
+     */
+    @Column
+    private Instant ancillaryHoldSetAt;
+
+    /**
+     * Staff ID that applied ancillary hold.
+     */
+    @Column(length = 120)
+    private String ancillaryHoldSetByStaffId;
+
+    /**
      * Linked appointment UUID (for appointment check-in flow).
      */
     @Column
@@ -769,6 +793,7 @@ public class QueueTicket {
      * @param staffId ID of clinician starting consultation
      */
     public void markInProgress(String staffId) {
+        clearAncillaryHold();
         this.status = QueueStatus.IN_PROGRESS;
         this.startedAt = Instant.now();
         this.startedByStaffId = staffId;
@@ -900,6 +925,35 @@ public class QueueTicket {
         this.startedByStaffId = null;
         this.completedAt = null;
         this.completedByStaffId = null;
+    }
+
+    /**
+     * Places the patient on an ancillary hold while remaining in the waiting state.
+     */
+    public void placeAncillaryHold(String staffId, String reason) {
+        this.status = QueueStatus.WAITING;
+        this.calledAt = null;
+        this.calledByStaffId = null;
+        this.calledByStaffName = null;
+        this.counterNumber = null;
+        this.startedAt = null;
+        this.startedByStaffId = null;
+        this.completedAt = null;
+        this.completedByStaffId = null;
+        this.ancillaryHold = true;
+        this.ancillaryHoldReason = sanitizeText(reason, 255);
+        this.ancillaryHoldSetAt = Instant.now();
+        this.ancillaryHoldSetByStaffId = sanitizeText(staffId, 120);
+    }
+
+    /**
+     * Clears an ancillary hold and returns the patient to standard triaged waiting.
+     */
+    public void clearAncillaryHold() {
+        this.ancillaryHold = false;
+        this.ancillaryHoldReason = null;
+        this.ancillaryHoldSetAt = null;
+        this.ancillaryHoldSetByStaffId = null;
     }
 
     /**

@@ -242,7 +242,17 @@ public class TriageController {
                     request.pastMedicalHistory(),
                     request.nursingNotes(),
                     request.emergencyContactName(),
-                    request.emergencyContactPhone()
+                    request.emergencyContactPhone(),
+                    request.pregnancyStatus(),
+                    request.vulnerabilityIndicators(),
+                    request.vulnerabilityNotes(),
+                    request.lastMenstrualPeriodDate(),
+                    request.remembersLastMenstrualPeriod(),
+                    request.pregnancyTestStatus(),
+                    request.fetalHealthCheckRequired(),
+                    request.fetalHealthNotes(),
+                    request.manualRedFlag(),
+                    request.manualRedFlagReason()
             );
             TriageAssessment assessment = triageService.recordClinicalObservations(assessmentId, observations);
             return ResponseEntity.ok(AssessmentResponse.from(assessment));
@@ -555,7 +565,37 @@ public class TriageController {
             String emergencyContactName,
 
             @Schema(description = "Emergency contact phone")
-            String emergencyContactPhone
+            String emergencyContactPhone,
+
+            @Schema(description = "Pregnancy status")
+            TriageAssessment.PregnancyStatus pregnancyStatus,
+
+            @Schema(description = "Selected vulnerability indicators")
+            java.util.Set<TriageAssessment.VulnerabilityIndicator> vulnerabilityIndicators,
+
+            @Schema(description = "Free-form vulnerability notes")
+            String vulnerabilityNotes,
+
+            @Schema(description = "Last menstrual period date")
+            java.time.LocalDate lastMenstrualPeriodDate,
+
+            @Schema(description = "Whether the patient remembers the last menstrual period date")
+            Boolean remembersLastMenstrualPeriod,
+
+            @Schema(description = "Pregnancy test workflow status")
+            TriageAssessment.PregnancyTestStatus pregnancyTestStatus,
+
+            @Schema(description = "Whether fetal health should be checked")
+            boolean fetalHealthCheckRequired,
+
+            @Schema(description = "Fetal health notes or concerns")
+            String fetalHealthNotes,
+
+            @Schema(description = "Manual nurse-defined red flag")
+            boolean manualRedFlag,
+
+            @Schema(description = "Reason for the manual red flag")
+            String manualRedFlagReason
     ) {
     }
 
@@ -707,6 +747,42 @@ public class TriageController {
             @Schema(description = "Emergency contact phone")
             String emergencyContactPhone,
 
+            @Schema(description = "Pregnancy status")
+            TriageAssessment.PregnancyStatus pregnancyStatus,
+
+            @Schema(description = "Whether active pregnancy is recorded")
+            boolean pregnant,
+
+            @Schema(description = "Whether patient is a newborn (28 days or younger)")
+            boolean newborn,
+
+            @Schema(description = "Selected vulnerability indicators")
+            java.util.Set<TriageAssessment.VulnerabilityIndicator> vulnerabilityIndicators,
+
+            @Schema(description = "Free-form vulnerability notes")
+            String vulnerabilityNotes,
+
+            @Schema(description = "Last menstrual period date")
+            java.time.LocalDate lastMenstrualPeriodDate,
+
+            @Schema(description = "Whether the patient remembers the last menstrual period date")
+            Boolean remembersLastMenstrualPeriod,
+
+            @Schema(description = "Pregnancy test workflow status")
+            TriageAssessment.PregnancyTestStatus pregnancyTestStatus,
+
+            @Schema(description = "Whether fetal health should be checked")
+            boolean fetalHealthCheckRequired,
+
+            @Schema(description = "Fetal health notes or concerns")
+            String fetalHealthNotes,
+
+            @Schema(description = "Manual nurse-defined red flag")
+            boolean manualRedFlag,
+
+            @Schema(description = "Reason for the manual red flag")
+            String manualRedFlagReason,
+
             // Triage classification
             @Schema(description = "System-calculated triage level")
             TriageLevel systemTriageLevel,
@@ -781,6 +857,18 @@ public class TriageController {
                     a.getNursingNotes(),
                     a.getEmergencyContactName(),
                     a.getEmergencyContactPhone(),
+                    a.getPregnancyStatus(),
+                    a.isPregnant(),
+                    a.isNewborn(),
+                    a.getVulnerabilityIndicators(),
+                    a.getVulnerabilityNotes(),
+                    a.getLastMenstrualPeriodDate(),
+                    a.getRemembersLastMenstrualPeriod(),
+                    a.getPregnancyTestStatus(),
+                    a.isFetalHealthCheckRequired(),
+                    a.getFetalHealthNotes(),
+                    a.isManualRedFlag(),
+                    a.getManualRedFlagReason(),
                     a.getSystemTriageLevel(),
                     a.getFinalTriageLevel(),
                     a.isTriageOverridden(),

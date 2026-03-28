@@ -35,6 +35,28 @@ public class AdminPortalService {
     }
 
     /**
+     * Returns all user-managed accounts that admins are allowed to review.
+     * System identities are excluded because they are not user-facing accounts.
+     */
+    public List<UserAccountView> getManagedUserAccounts() {
+        return userRepository.findAll().stream()
+                .filter(user -> user.getRole() != Role.SYSTEM)
+                .sorted(Comparator
+                        .comparing((User user) -> user.getRole().name())
+                        .thenComparing(User::getUsername, String.CASE_INSENSITIVE_ORDER))
+                .map(user -> new UserAccountView(
+                        user.getId(),
+                        user.getUsername(),
+                        user.getEmail(),
+                        user.getFullName(),
+                        user.getRole().name(),
+                        user.getActorType().name(),
+                        user.isActive()
+                ))
+                .toList();
+    }
+
+    /**
      * Returns only non-patient accounts so super admins can manage login identities
      * without viewing patient-linked account details.
      */
@@ -99,6 +121,17 @@ public class AdminPortalService {
                         event.getPatientId() != null
                 ))
                 .toList();
+    }
+
+    public record UserAccountView(
+            UUID userId,
+            String username,
+            String email,
+            String fullName,
+            String role,
+            String actorType,
+            boolean active
+    ) {
     }
 
     public record StaffAccountView(

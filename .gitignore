@@ -47,4 +47,5 @@ frontend/dist/
 frontend/web-build/
 frontend/.env.production.local
 frontend/.env.local
+# Local scratch notes / handoff notes
 notepad.txt

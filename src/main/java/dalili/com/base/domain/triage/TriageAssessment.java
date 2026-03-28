@@ -7,6 +7,9 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.Period;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -201,6 +204,74 @@ public class TriageAssessment {
     @Column(length = 100)
     private String emergencyContactPhone;
 
+    /**
+     * Structured pregnancy status for vulnerability-aware workflows.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 40)
+    private PregnancyStatus pregnancyStatus = PregnancyStatus.UNKNOWN;
+
+    /**
+     * Additional vulnerability indicators recorded during triage.
+     */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(
+            name = "triage_assessment_vulnerability_indicators",
+            joinColumns = @JoinColumn(name = "assessment_id")
+    )
+    @Enumerated(EnumType.STRING)
+    @Column(name = "indicator", nullable = false, length = 60)
+    private Set<VulnerabilityIndicator> vulnerabilityIndicators = new LinkedHashSet<>();
+
+    /**
+     * Free-form notes for vulnerability context.
+     */
+    @Column(length = 1000)
+    private String vulnerabilityNotes;
+
+    /**
+     * Last menstrual period date when known.
+     */
+    @Column
+    private LocalDate lastMenstrualPeriodDate;
+
+    /**
+     * Whether the patient remembers the last menstrual period date.
+     */
+    @Column
+    private Boolean remembersLastMenstrualPeriod;
+
+    /**
+     * Pregnancy test workflow status captured during triage.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 40)
+    private PregnancyTestStatus pregnancyTestStatus = PregnancyTestStatus.UNKNOWN;
+
+    /**
+     * Whether fetal health assessment is required.
+     */
+    @Column(nullable = false)
+    private boolean fetalHealthCheckRequired = false;
+
+    /**
+     * Notes for fetal health checks or concerns.
+     */
+    @Column(length = 1000)
+    private String fetalHealthNotes;
+
+    /**
+     * Manual nurse-declared red flag outside the fixed checklist.
+     */
+    @Column(nullable = false)
+    private boolean manualRedFlag = false;
+
+    /**
+     * Reason for manually raising a red flag.
+     */
+    @Column(length = 1000)
+    private String manualRedFlagReason;
+
     // ==================== TRIAGE CLASSIFICATION ====================
 
     /**
@@ -378,6 +449,16 @@ public class TriageAssessment {
         assessment.previousAssessmentId = previous.id;
         assessment.systemTriageLevel = TriageLevel.GREEN;
         assessment.finalTriageLevel = TriageLevel.GREEN;
+        assessment.pregnancyStatus = previous.pregnancyStatus;
+        assessment.vulnerabilityIndicators = new LinkedHashSet<>(previous.vulnerabilityIndicators);
+        assessment.vulnerabilityNotes = previous.vulnerabilityNotes;
+        assessment.lastMenstrualPeriodDate = previous.lastMenstrualPeriodDate;
+        assessment.remembersLastMenstrualPeriod = previous.remembersLastMenstrualPeriod;
+        assessment.pregnancyTestStatus = previous.pregnancyTestStatus;
+        assessment.fetalHealthCheckRequired = previous.fetalHealthCheckRequired;
+        assessment.fetalHealthNotes = previous.fetalHealthNotes;
+        assessment.manualRedFlag = previous.manualRedFlag;
+        assessment.manualRedFlagReason = previous.manualRedFlagReason;
         return assessment;
     }
 
@@ -526,6 +607,51 @@ public class TriageAssessment {
         this.emergencyContactPhone = phone;
     }
 
+    /**
+     * Records structured vulnerability markers captured during triage.
+     */
+    public void recordVulnerabilityProfile(
+            PregnancyStatus pregnancyStatus,
+            Set<VulnerabilityIndicator> vulnerabilityIndicators,
+            String vulnerabilityNotes
+    ) {
+        this.pregnancyStatus = pregnancyStatus != null ? pregnancyStatus : PregnancyStatus.UNKNOWN;
+        this.vulnerabilityIndicators = vulnerabilityIndicators == null || vulnerabilityIndicators.isEmpty()
+                ? new LinkedHashSet<>()
+                : EnumSet.copyOf(vulnerabilityIndicators);
+        this.vulnerabilityNotes = vulnerabilityNotes;
+    }
+
+    /**
+     * Records pregnancy-screening details captured during triage.
+     */
+    public void recordPregnancyScreening(
+            PregnancyStatus pregnancyStatus,
+            LocalDate lastMenstrualPeriodDate,
+            Boolean remembersLastMenstrualPeriod,
+            PregnancyTestStatus pregnancyTestStatus,
+            boolean fetalHealthCheckRequired,
+            String fetalHealthNotes
+    ) {
+        this.pregnancyStatus = pregnancyStatus != null ? pregnancyStatus : PregnancyStatus.UNKNOWN;
+        this.lastMenstrualPeriodDate = lastMenstrualPeriodDate;
+        this.remembersLastMenstrualPeriod = remembersLastMenstrualPeriod;
+        this.pregnancyTestStatus = pregnancyTestStatus != null ? pregnancyTestStatus : PregnancyTestStatus.UNKNOWN;
+        this.fetalHealthCheckRequired = fetalHealthCheckRequired;
+        this.fetalHealthNotes = fetalHealthNotes;
+    }
+
+    /**
+     * Records a manual nurse-defined red flag and reason.
+     */
+    public void recordManualRedFlag(boolean manualRedFlag, String manualRedFlagReason) {
+        if (manualRedFlag && (manualRedFlagReason == null || manualRedFlagReason.isBlank())) {
+            throw new IllegalArgumentException("Manual red flag reason is required");
+        }
+        this.manualRedFlag = manualRedFlag;
+        this.manualRedFlagReason = manualRedFlag ? manualRedFlagReason : null;
+    }
+
     // ==================== RED FLAG SETTERS ====================
 
     /**
@@ -640,7 +766,7 @@ public class TriageAssessment {
      */
     public boolean hasRedFlags() {
         return chestPain || difficultyBreathing || strokeSymptoms || severebleeding ||
-                allergicReaction || alteredMentalStatus || pregnancyConcern || severeAbdominalPain;
+                allergicReaction || alteredMentalStatus || pregnancyConcern || severeAbdominalPain || manualRedFlag;
     }
 
     /**
@@ -659,6 +785,28 @@ public class TriageAssessment {
      */
     public boolean isElderly() {
         return getPatientAgeYears() >= 65;
+    }
+
+    /**
+     * Checks if patient is a newborn (28 days or younger).
+     *
+     * @return true if patient is a newborn
+     */
+    public boolean isNewborn() {
+        LocalDate referenceDate = assessedAt != null
+                ? assessedAt.atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                : LocalDate.now();
+        return !patientDateOfBirth.isAfter(referenceDate)
+                && java.time.temporal.ChronoUnit.DAYS.between(patientDateOfBirth, referenceDate) <= 28;
+    }
+
+    /**
+     * Convenience flag for active pregnancy state.
+     *
+     * @return true if status is pregnant
+     */
+    public boolean isPregnant() {
+        return pregnancyStatus == PregnancyStatus.PREGNANT;
     }
 
     /**
@@ -684,5 +832,36 @@ public class TriageAssessment {
          * Unresponsive - patient does not respond to any stimuli.
          */
         UNRESPONSIVE
+    }
+
+    public enum PregnancyStatus {
+        UNKNOWN,
+        NOT_APPLICABLE,
+        NOT_PREGNANT,
+        PREGNANT,
+        POSTPARTUM
+    }
+
+    public enum VulnerabilityIndicator {
+        ELDERLY,
+        NEWBORN,
+        EXPECTANT,
+        POSTPARTUM_RECOVERY,
+        POSTPARTUM_DEPRESSION_RISK,
+        DISABILITY_SUPPORT,
+        FALL_RISK,
+        MENTAL_HEALTH_RISK,
+        DOMESTIC_VIOLENCE_RISK,
+        CHRONIC_COMPLEXITY
+    }
+
+    public enum PregnancyTestStatus {
+        UNKNOWN,
+        NOT_REQUIRED,
+        ORDERED,
+        PENDING,
+        POSITIVE,
+        NEGATIVE,
+        DECLINED
     }
 }

@@ -488,6 +488,51 @@ public class QueueController {
         }
     }
 
+    @Operation(
+            summary = "Place patient on ancillary hold",
+            description = "Returns a triaged patient to waiting but keeps them out of consultation selection while awaiting a step such as pregnancy testing."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Ancillary hold applied",
+                    content = @Content(schema = @Schema(implementation = TicketResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request or ticket state",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    })
+    @PostMapping("/{ticketId}/hold")
+    public ResponseEntity<?> holdForAncillaryStep(
+            @Parameter(description = "Queue ticket UUID") @PathVariable UUID ticketId,
+            @RequestBody HoldRequest request
+    ) {
+        try {
+            QueueTicket ticket = queueService.holdForAncillaryStep(ticketId, request.reason());
+            return ResponseEntity.ok(TicketResponse.from(ticket));
+        } catch (QueueService.QueueException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
+    @Operation(
+            summary = "Release ancillary hold",
+            description = "Clears an ancillary hold so the patient can re-enter clinician consultation selection."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Ancillary hold released",
+                    content = @Content(schema = @Schema(implementation = TicketResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request or ticket state",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    })
+    @PostMapping("/{ticketId}/resume")
+    public ResponseEntity<?> releaseAncillaryHold(
+            @Parameter(description = "Queue ticket UUID") @PathVariable UUID ticketId
+    ) {
+        try {
+            QueueTicket ticket = queueService.releaseAncillaryHold(ticketId);
+            return ResponseEntity.ok(TicketResponse.from(ticket));
+        } catch (QueueService.QueueException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
     /**
      * Completes a consultation.
      *
@@ -723,6 +768,13 @@ public class QueueController {
     ) {
     }
 
+    @Schema(description = "Request to place patient on ancillary hold")
+    public record HoldRequest(
+            @Schema(description = "Reason for ancillary hold", example = "Waiting for pregnancy test")
+            String reason
+    ) {
+    }
+
     /**
      * Error response.
      *
@@ -840,6 +892,18 @@ public class QueueController {
             @Schema(description = "Admission reason if patient was admitted")
             String admissionReason,
 
+            @Schema(description = "Whether ancillary hold is active")
+            boolean ancillaryHold,
+
+            @Schema(description = "Reason for ancillary hold")
+            String ancillaryHoldReason,
+
+            @Schema(description = "When ancillary hold was applied")
+            Instant ancillaryHoldSetAt,
+
+            @Schema(description = "Staff ID that applied ancillary hold")
+            String ancillaryHoldSetByStaffId,
+
             @Schema(description = "Linked appointment UUID if this is an appointment check-in")
             UUID appointmentId,
 
@@ -930,6 +994,10 @@ public class QueueController {
                     t.getCompletedAt(),
                     t.getEscalationReason(),
                     t.getAdmissionReason(),
+                    t.isAncillaryHold(),
+                    t.getAncillaryHoldReason(),
+                    t.getAncillaryHoldSetAt(),
+                    t.getAncillaryHoldSetByStaffId(),
                     t.getAppointmentId(),
                     t.getAppointmentScheduledAt(),
                     t.getAppointmentWindowOpensAt(),
@@ -964,4 +1032,3 @@ public class QueueController {
         }
     }
 }
-

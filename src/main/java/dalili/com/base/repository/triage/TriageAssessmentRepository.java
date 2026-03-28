@@ -53,6 +53,15 @@ public interface TriageAssessmentRepository extends JpaRepository<TriageAssessme
     List<TriageAssessment> findByAssessedAtBetweenOrderByAssessedAtDesc(Instant start, Instant end);
 
     /**
+     * Finds assessments performed by a specific staff member within a time range.
+     */
+    List<TriageAssessment> findByAssessedByStaffIdAndAssessedAtBetweenOrderByAssessedAtDesc(
+            String assessedByStaffId,
+            Instant start,
+            Instant end
+    );
+
+    /**
      * Finds assessments with triage overrides within a time range.
      * Used for quality review of clinical judgment vs system recommendations.
      *

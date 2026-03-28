@@ -325,7 +325,9 @@ public class QueueService {
         refreshAppointmentPriorityBoosts();
         return queueRepository.findByQueueDateAndStatusAndTriagedOrderByEffectivePriorityAscCreatedAtAsc(
                 LocalDate.now(), QueueTicket.QueueStatus.WAITING, true
-        );
+                ).stream()
+                .filter(ticket -> !ticket.isAncillaryHold())
+                .toList();
     }
 
     /**
@@ -489,6 +491,9 @@ public class QueueService {
         if (ticket.getStatus() != QueueTicket.QueueStatus.WAITING) {
             throw new QueueException("Patient is not in waiting status");
         }
+        if (ticket.isAncillaryHold()) {
+            throw new QueueException("Patient is on ancillary hold and cannot be called for consultation yet");
+        }
 
         String purpose = ticket.isTriaged() ? "CONSULTATION" : "TRIAGE";
         return callPatientInternal(ticket, counterNumber, purpose);
@@ -629,6 +634,53 @@ public class QueueService {
                 String.format("Patient returned to consultation queue after triage: %s",
                         ticket.getTicketNumber()));
 
+        return ticket;
+    }
+
+    /**
+     * Places a triaged patient on ancillary hold while waiting for follow-up work such as pregnancy testing.
+     */
+    @Transactional
+    public QueueTicket holdForAncillaryStep(UUID ticketId, String reason) {
+        auditGuard.assertSessionActive();
+
+        QueueTicket ticket = queueRepository.findById(ticketId)
+                .orElseThrow(() -> new QueueException("Ticket not found"));
+
+        if (!ticket.isTriaged()) {
+            throw new QueueException("Patient must be triaged before being placed on ancillary hold");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new QueueException("Ancillary hold reason is required");
+        }
+
+        ticket.placeAncillaryHold(sessionContext.username(), reason);
+        ticket = queueRepository.save(ticket);
+
+        auditService.record("QUEUE_ANCILLARY_HOLD", ticket.getPatientId(),
+                String.format("Ticket %s placed on ancillary hold: %s", ticket.getTicketNumber(), reason.trim()));
+        return ticket;
+    }
+
+    /**
+     * Clears ancillary hold and returns patient to the consultation waiting pool.
+     */
+    @Transactional
+    public QueueTicket releaseAncillaryHold(UUID ticketId) {
+        auditGuard.assertSessionActive();
+
+        QueueTicket ticket = queueRepository.findById(ticketId)
+                .orElseThrow(() -> new QueueException("Ticket not found"));
+
+        if (!ticket.isAncillaryHold()) {
+            throw new QueueException("Ticket is not on ancillary hold");
+        }
+
+        ticket.clearAncillaryHold();
+        ticket = queueRepository.save(ticket);
+
+        auditService.record("QUEUE_ANCILLARY_HOLD_RELEASED", ticket.getPatientId(),
+                String.format("Ticket %s released from ancillary hold", ticket.getTicketNumber()));
         return ticket;
     }
 

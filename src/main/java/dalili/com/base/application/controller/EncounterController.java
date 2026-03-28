@@ -581,11 +581,22 @@ public class EncounterController {
         return ResponseEntity.ok(summaries);
     }
 
+    @Operation(summary = "Get clinical dashboard metrics")
+    @GetMapping("/dashboard/clinical")
+    public ResponseEntity<?> getClinicalDashboard() {
+        try {
+            EncounterService.ClinicalDashboard dashboard = encounterService.getClinicalDashboard();
+            return ResponseEntity.ok(dashboard);
+        } catch (EncounterService.EncounterException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
     @Operation(summary = "Get physician dashboard metrics")
     @GetMapping("/dashboard/physician")
     public ResponseEntity<?> getPhysicianDashboard() {
         try {
-            EncounterService.PhysicianDashboard dashboard = encounterService.getPhysicianDashboard();
+            EncounterService.ClinicalDashboard dashboard = encounterService.getClinicalDashboard();
             return ResponseEntity.ok(dashboard);
         } catch (EncounterService.EncounterException e) {
             return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));

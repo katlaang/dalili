@@ -10,6 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -167,6 +169,13 @@ public class PatientService {
      */
     public Patient findById(UUID patientId) {
         return findByIdInternal(patientId);
+    }
+
+    /**
+     * Internal bulk lookup by ID for analytics and workflow joins.
+     */
+    public List<Patient> findAllByIds(Collection<UUID> patientIds) {
+        return patientRepository.findAllById(patientIds);
     }
 
     /**

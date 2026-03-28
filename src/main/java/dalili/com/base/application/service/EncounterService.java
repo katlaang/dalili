@@ -12,6 +12,8 @@ import dalili.com.base.domain.encounter.repository.MedicationOrderRepository;
 import dalili.com.base.domain.patient.model.Patient;
 import dalili.com.base.domain.queue.QueueTicket;
 import dalili.com.base.domain.triage.TriageAssessment;
+import dalili.com.base.domain.triage.TriageLevel;
+import dalili.com.base.domain.user.model.Role;
 import dalili.com.base.infra.audit.AuditService;
 import dalili.com.base.interfaces.security.AuditGuard;
 import dalili.com.base.repository.queue.QueueTicketRepository;
@@ -23,10 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.*;
 import java.util.*;
 
 /**
@@ -1075,67 +1074,628 @@ public class EncounterService {
         return encounter;
     }
 
-    public PhysicianDashboard getPhysicianDashboard() {
+    public ClinicalDashboard getClinicalDashboard() {
         auditGuard.assertSessionActive();
 
-        UUID clinicianId = sessionContext.userId();
-        if (clinicianId == null) {
-            throw new EncounterException("Clinician session is required");
+        Role role = sessionContext.role();
+        if (role == null) {
+            throw new EncounterException("Clinician role is required");
         }
 
         LocalDate today = LocalDate.now();
         LocalDate weekStart = today.minusDays(today.getDayOfWeek().getValue() - 1L);
         LocalDate monthStart = today.withDayOfMonth(1);
-        LocalDate yearStart = today.withDayOfYear(1);
-
+        LocalDate earliestStartDate = weekStart.isBefore(monthStart) ? weekStart : monthStart;
         Instant now = Instant.now();
-        Instant weekStartInstant = atStartOfDay(weekStart);
-        Instant monthStartInstant = atStartOfDay(monthStart);
-        Instant yearStartInstant = atStartOfDay(yearStart);
+        Instant periodStart = atStartOfDay(earliestStartDate);
 
-        long patientsSeenWeek = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
+        return switch (role) {
+            case PHYSICIAN -> buildPhysicianDashboard(today, weekStart, monthStart, periodStart, now);
+            case NURSE -> buildNurseDashboard(today, weekStart, monthStart, periodStart, now);
+            case ADMIN, SUPER_ADMIN -> buildFacilityDashboard(today, weekStart, monthStart, periodStart, now);
+            default ->
+                    throw new EncounterException("Dashboard is only available to nurses, physicians, and administrators");
+        };
+    }
+
+    private ClinicalDashboard buildPhysicianDashboard(
+            LocalDate today,
+            LocalDate weekStart,
+            LocalDate monthStart,
+            Instant periodStart,
+            Instant now
+    ) {
+        UUID clinicianId = sessionContext.userId();
+        if (clinicianId == null) {
+            throw new EncounterException("Clinician session is required");
+        }
+
+        List<Encounter> encounters = encounterRepository.findByClinicianIdAndStatusAndStartedAtBetweenOrderByStartedAtDesc(
                 clinicianId,
                 Encounter.EncounterStatus.COMPLETED,
-                weekStartInstant,
+                periodStart,
                 now
         );
-        long patientsSeenMonth = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
-                clinicianId,
-                Encounter.EncounterStatus.COMPLETED,
-                monthStartInstant,
-                now
+        Map<UUID, QueueTicket> queueTicketsById = loadQueueTickets(
+                encounters.stream()
+                        .map(Encounter::getQueueTicketId)
+                        .filter(Objects::nonNull)
+                        .toList()
         );
-        long patientsSeenYear = encounterRepository.countByClinicianIdAndStatusAndStartedAtBetween(
-                clinicianId,
-                Encounter.EncounterStatus.COMPLETED,
-                yearStartInstant,
-                now
+        Map<UUID, TriageAssessment> triageAssessmentsById = loadTriageAssessments(
+                extractEncounterTriageIds(encounters, queueTicketsById)
         );
+        Map<UUID, Patient> patientsById = loadPatientsForEncounters(encounters, queueTicketsById);
+
+        List<ClinicalDashboardEvent> events = encounters.stream()
+                .map(encounter -> buildEncounterDashboardEvent(
+                        encounter,
+                        queueTicketsById,
+                        triageAssessmentsById,
+                        patientsById,
+                        false
+                ))
+                .toList();
 
         Double weekAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
-                clinicianId, weekStartInstant, now
+                clinicianId,
+                atStartOfDay(weekStart),
+                now
         );
         Double monthAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
-                clinicianId, monthStartInstant, now
-        );
-        Double yearAccuracy = encounterRepository.averageTranscriptAccuracyByClinicianAndStartedAtBetween(
-                clinicianId, yearStartInstant, now
+                clinicianId,
+                atStartOfDay(monthStart),
+                now
         );
 
-        return new PhysicianDashboard(
-                clinicianId,
+        return buildClinicalDashboard(
+                "PHYSICIAN",
+                "Patients seen",
                 sessionContext.username(),
-                patientsSeenWeek,
-                patientsSeenMonth,
-                patientsSeenYear,
+                events,
+                "Avg consult time today",
+                weekAccuracy,
+                monthAccuracy,
+                today,
+                weekStart,
+                monthStart,
+                now
+        );
+    }
+
+    private ClinicalDashboard buildNurseDashboard(
+            LocalDate today,
+            LocalDate weekStart,
+            LocalDate monthStart,
+            Instant periodStart,
+            Instant now
+    ) {
+        String staffId = sessionContext.username();
+        if (staffId == null || staffId.isBlank()) {
+            throw new EncounterException("Nurse session is required");
+        }
+
+        List<TriageAssessment> assessments =
+                triageAssessmentRepository.findByAssessedByStaffIdAndAssessedAtBetweenOrderByAssessedAtDesc(
+                        staffId,
+                        periodStart,
+                        now
+                );
+        Map<UUID, QueueTicket> queueTicketsById = loadQueueTickets(
+                assessments.stream()
+                        .map(TriageAssessment::getQueueTicketId)
+                        .filter(Objects::nonNull)
+                        .toList()
+        );
+
+        List<ClinicalDashboardEvent> events = assessments.stream()
+                .map(assessment -> buildTriageDashboardEvent(assessment, queueTicketsById))
+                .toList();
+
+        return buildClinicalDashboard(
+                "NURSE",
+                "Patients triaged",
+                staffId,
+                events,
+                "Avg time to triage today",
+                null,
+                null,
+                today,
+                weekStart,
+                monthStart,
+                now
+        );
+    }
+
+    private ClinicalDashboard buildFacilityDashboard(
+            LocalDate today,
+            LocalDate weekStart,
+            LocalDate monthStart,
+            Instant periodStart,
+            Instant now
+    ) {
+        List<Encounter> encounters = encounterRepository.findByStatusAndStartedAtBetweenOrderByStartedAtDesc(
+                Encounter.EncounterStatus.COMPLETED,
+                periodStart,
+                now
+        );
+        Map<UUID, QueueTicket> queueTicketsById = loadQueueTickets(
+                encounters.stream()
+                        .map(Encounter::getQueueTicketId)
+                        .filter(Objects::nonNull)
+                        .toList()
+        );
+        Map<UUID, TriageAssessment> triageAssessmentsById = loadTriageAssessments(
+                extractEncounterTriageIds(encounters, queueTicketsById)
+        );
+        Map<UUID, Patient> patientsById = loadPatientsForEncounters(encounters, queueTicketsById);
+
+        List<ClinicalDashboardEvent> events = encounters.stream()
+                .map(encounter -> buildEncounterDashboardEvent(
+                        encounter,
+                        queueTicketsById,
+                        triageAssessmentsById,
+                        patientsById,
+                        true
+                ))
+                .toList();
+
+        return buildClinicalDashboard(
+                "FACILITY",
+                "Patients seen",
+                "Clinic-wide",
+                events,
+                "Avg visit throughput today",
+                averageTranscriptAccuracy(encounters, atStartOfDay(weekStart)),
+                averageTranscriptAccuracy(encounters, atStartOfDay(monthStart)),
+                today,
+                weekStart,
+                monthStart,
+                now
+        );
+    }
+
+    private ClinicalDashboard buildClinicalDashboard(
+            String dashboardType,
+            String activityLabel,
+            String subjectLabel,
+            List<ClinicalDashboardEvent> events,
+            String processingLabel,
+            Double weekAccuracy,
+            Double monthAccuracy,
+            LocalDate today,
+            LocalDate weekStart,
+            LocalDate monthStart,
+            Instant now
+    ) {
+        List<ClinicalDashboardEvent> todayEvents = filterEventsByStart(events, atStartOfDay(today));
+        List<ClinicalDashboardEvent> weekEvents = filterEventsByStart(events, atStartOfDay(weekStart));
+        List<ClinicalDashboardEvent> monthEvents = filterEventsByStart(events, atStartOfDay(monthStart));
+
+        DashboardComplaint mostCommonComplaintWeek = buildTopComplaint(weekEvents);
+        DashboardComplaint mostCommonComplaintMonth = buildTopComplaint(monthEvents);
+        boolean recurringIssueFlagged = isRecurringIssue(mostCommonComplaintWeek, mostCommonComplaintMonth);
+        String recurringIssueMessage = recurringIssueFlagged && mostCommonComplaintWeek != null
+                ? "Recurring issue flagged: " + mostCommonComplaintWeek.label() + " leads this week and month."
+                : null;
+
+        return new ClinicalDashboard(
+                dashboardType,
+                sessionContext.role() != null ? sessionContext.role().name() : "UNKNOWN",
+                subjectLabel,
+                activityLabel,
+                countDistinctPatients(todayEvents),
+                countDistinctPatients(weekEvents),
+                countDistinctPatients(monthEvents),
+                mostCommonComplaintWeek,
+                mostCommonComplaintMonth,
+                recurringIssueFlagged,
+                recurringIssueMessage,
+                buildCategoryBreakdown(todayEvents),
+                buildUrgencyBreakdown(todayEvents),
+                buildProcessingMetric(processingLabel, todayEvents),
+                buildAgeDistribution(monthEvents, today),
                 roundPercent(weekAccuracy),
                 roundPercent(monthAccuracy),
-                roundPercent(yearAccuracy),
                 weekStart.toString(),
                 monthStart.toString(),
-                yearStart.toString(),
                 now.toString()
         );
+    }
+
+    private List<ClinicalDashboardEvent> filterEventsByStart(List<ClinicalDashboardEvent> events, Instant start) {
+        return events.stream()
+                .filter(event -> event.occurredAt() != null && !event.occurredAt().isBefore(start))
+                .toList();
+    }
+
+    private Map<UUID, QueueTicket> loadQueueTickets(Collection<UUID> queueTicketIds) {
+        if (queueTicketIds == null || queueTicketIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, QueueTicket> queueTicketsById = new HashMap<>();
+        for (QueueTicket ticket : queueTicketRepository.findAllById(queueTicketIds)) {
+            queueTicketsById.put(ticket.getId(), ticket);
+        }
+        return queueTicketsById;
+    }
+
+    private Map<UUID, TriageAssessment> loadTriageAssessments(Collection<UUID> assessmentIds) {
+        if (assessmentIds == null || assessmentIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, TriageAssessment> assessmentsById = new HashMap<>();
+        for (TriageAssessment assessment : triageAssessmentRepository.findAllById(assessmentIds)) {
+            assessmentsById.put(assessment.getId(), assessment);
+        }
+        return assessmentsById;
+    }
+
+    private Set<UUID> extractEncounterTriageIds(
+            List<Encounter> encounters,
+            Map<UUID, QueueTicket> queueTicketsById
+    ) {
+        Set<UUID> assessmentIds = new LinkedHashSet<>();
+        for (Encounter encounter : encounters) {
+            if (encounter.getTriageAssessmentId() != null) {
+                assessmentIds.add(encounter.getTriageAssessmentId());
+                continue;
+            }
+
+            QueueTicket ticket = queueTicketsById.get(encounter.getQueueTicketId());
+            if (ticket != null && ticket.getTriageAssessmentId() != null) {
+                assessmentIds.add(ticket.getTriageAssessmentId());
+            }
+        }
+        return assessmentIds;
+    }
+
+    private Map<UUID, Patient> loadPatientsForEncounters(
+            List<Encounter> encounters,
+            Map<UUID, QueueTicket> queueTicketsById
+    ) {
+        Set<UUID> missingPatientIds = new LinkedHashSet<>();
+        for (Encounter encounter : encounters) {
+            QueueTicket ticket = queueTicketsById.get(encounter.getQueueTicketId());
+            if (ticket == null || ticket.getPatientDateOfBirthSnapshot() == null) {
+                missingPatientIds.add(encounter.getPatientId());
+            }
+        }
+
+        if (missingPatientIds.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<UUID, Patient> patientsById = new HashMap<>();
+        for (Patient patient : patientService.findAllByIds(missingPatientIds)) {
+            patientsById.put(patient.getId(), patient);
+        }
+        return patientsById;
+    }
+
+    private ClinicalDashboardEvent buildEncounterDashboardEvent(
+            Encounter encounter,
+            Map<UUID, QueueTicket> queueTicketsById,
+            Map<UUID, TriageAssessment> triageAssessmentsById,
+            Map<UUID, Patient> patientsById,
+            boolean useThroughputTiming
+    ) {
+        QueueTicket ticket = queueTicketsById.get(encounter.getQueueTicketId());
+        UUID triageAssessmentId = encounter.getTriageAssessmentId();
+        if (triageAssessmentId == null && ticket != null) {
+            triageAssessmentId = ticket.getTriageAssessmentId();
+        }
+        TriageAssessment triageAssessment = triageAssessmentId != null
+                ? triageAssessmentsById.get(triageAssessmentId)
+                : null;
+
+        QueueTicket.QueueCategory category = ticket != null ? ticket.getCategory() : inferQueueCategory(encounter);
+        TriageLevel triageLevel = ticket != null ? ticket.getTriageLevel() : null;
+
+        return new ClinicalDashboardEvent(
+                encounter.getPatientId(),
+                resolveEncounterDateOfBirth(encounter, ticket, patientsById),
+                encounter.getStartedAt(),
+                firstNonBlank(encounter.getChiefComplaint(), triageAssessment != null ? triageAssessment.getChiefComplaint() : null),
+                category.name(),
+                category.getDisplayName(),
+                triageLevel != null ? triageLevel.name() : "UNSPECIFIED",
+                triageLevel != null ? triageLevel.getDisplayName() : "Untriaged",
+                useThroughputTiming
+                        ? resolveThroughputMinutes(ticket, encounter)
+                        : durationMinutes(encounter.getStartedAt(), encounter.getCompletedAt())
+        );
+    }
+
+    private ClinicalDashboardEvent buildTriageDashboardEvent(
+            TriageAssessment assessment,
+            Map<UUID, QueueTicket> queueTicketsById
+    ) {
+        QueueTicket ticket = queueTicketsById.get(assessment.getQueueTicketId());
+        QueueTicket.QueueCategory category = ticket != null
+                ? ticket.getCategory()
+                : QueueTicket.QueueCategory.GENERAL;
+        TriageLevel triageLevel = assessment.getFinalTriageLevel() != null
+                ? assessment.getFinalTriageLevel()
+                : assessment.getSystemTriageLevel();
+        if (triageLevel == null && ticket != null) {
+            triageLevel = ticket.getTriageLevel();
+        }
+
+        return new ClinicalDashboardEvent(
+                assessment.getPatientId(),
+                assessment.getPatientDateOfBirth(),
+                assessment.getAssessedAt(),
+                assessment.getChiefComplaint(),
+                category.name(),
+                category.getDisplayName(),
+                triageLevel != null ? triageLevel.name() : "UNSPECIFIED",
+                triageLevel != null ? triageLevel.getDisplayName() : "Pending",
+                ticket != null ? durationMinutes(ticket.getCreatedAt(), assessment.getAssessedAt()) : null
+        );
+    }
+
+    private LocalDate resolveEncounterDateOfBirth(
+            Encounter encounter,
+            QueueTicket ticket,
+            Map<UUID, Patient> patientsById
+    ) {
+        if (ticket != null && ticket.getPatientDateOfBirthSnapshot() != null) {
+            return ticket.getPatientDateOfBirthSnapshot();
+        }
+        Patient patient = patientsById.get(encounter.getPatientId());
+        return patient != null ? patient.getDateOfBirth() : null;
+    }
+
+    private QueueTicket.QueueCategory inferQueueCategory(Encounter encounter) {
+        if (encounter.getEncounterType() == null) {
+            return QueueTicket.QueueCategory.GENERAL;
+        }
+        return switch (encounter.getEncounterType()) {
+            case EMERGENCY -> QueueTicket.QueueCategory.EMERGENCY;
+            case FOLLOW_UP -> QueueTicket.QueueCategory.FOLLOW_UP;
+            default -> QueueTicket.QueueCategory.GENERAL;
+        };
+    }
+
+    private Long resolveThroughputMinutes(QueueTicket ticket, Encounter encounter) {
+        if (ticket != null && ticket.getCreatedAt() != null && ticket.getCompletedAt() != null) {
+            return durationMinutes(ticket.getCreatedAt(), ticket.getCompletedAt());
+        }
+        return durationMinutes(encounter.getStartedAt(), encounter.getCompletedAt());
+    }
+
+    private Long durationMinutes(Instant start, Instant end) {
+        if (start == null || end == null) {
+            return null;
+        }
+        return Math.max(0L, Duration.between(start, end).toMinutes());
+    }
+
+    private long countDistinctPatients(List<ClinicalDashboardEvent> events) {
+        return events.stream()
+                .map(ClinicalDashboardEvent::patientId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
+    }
+
+    private DashboardComplaint buildTopComplaint(List<ClinicalDashboardEvent> events) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        Map<String, String> labels = new LinkedHashMap<>();
+
+        for (ClinicalDashboardEvent event : events) {
+            String normalized = normalizeComplaint(event.complaint());
+            if (normalized == null) {
+                continue;
+            }
+            counts.put(normalized, counts.getOrDefault(normalized, 0L) + 1L);
+            labels.putIfAbsent(normalized, formatComplaintLabel(normalized));
+        }
+
+        Map.Entry<String, Long> topComplaint = counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(entry -> labels.get(entry.getKey())))
+                .findFirst()
+                .orElse(null);
+
+        if (topComplaint == null) {
+            return null;
+        }
+
+        return new DashboardComplaint(
+                topComplaint.getKey(),
+                labels.get(topComplaint.getKey()),
+                topComplaint.getValue()
+        );
+    }
+
+    private boolean isRecurringIssue(DashboardComplaint weekComplaint, DashboardComplaint monthComplaint) {
+        if (weekComplaint == null || monthComplaint == null) {
+            return false;
+        }
+        return weekComplaint.key().equals(monthComplaint.key())
+                && weekComplaint.count() >= 2
+                && monthComplaint.count() >= 3;
+    }
+
+    private String normalizeComplaint(String complaint) {
+        if (complaint == null || complaint.isBlank()) {
+            return null;
+        }
+
+        String normalized = complaint
+                .replace('\n', ' ')
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9 ]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String formatComplaintLabel(String normalizedComplaint) {
+        String[] tokens = normalizedComplaint.split(" ");
+        StringBuilder builder = new StringBuilder();
+        for (String token : tokens) {
+            if (token.isBlank()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            builder.append(Character.toUpperCase(token.charAt(0)));
+            if (token.length() > 1) {
+                builder.append(token.substring(1));
+            }
+        }
+        String label = builder.toString();
+        return label.length() > 48 ? label.substring(0, 45) + "..." : label;
+    }
+
+    private List<DashboardBreakdownItem> buildCategoryBreakdown(List<ClinicalDashboardEvent> events) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        Map<String, String> labels = new LinkedHashMap<>();
+
+        for (QueueTicket.QueueCategory category : QueueTicket.QueueCategory.values()) {
+            counts.put(category.name(), 0L);
+            labels.put(category.name(), category.getDisplayName());
+        }
+
+        for (ClinicalDashboardEvent event : events) {
+            if (event.categoryKey() == null) {
+                continue;
+            }
+            counts.put(event.categoryKey(), counts.getOrDefault(event.categoryKey(), 0L) + 1L);
+            labels.putIfAbsent(event.categoryKey(), event.categoryLabel());
+        }
+
+        return counts.entrySet().stream()
+                .filter(entry -> entry.getValue() > 0)
+                .map(entry -> new DashboardBreakdownItem(entry.getKey(), labels.get(entry.getKey()), entry.getValue()))
+                .toList();
+    }
+
+    private List<DashboardBreakdownItem> buildUrgencyBreakdown(List<ClinicalDashboardEvent> events) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        Map<String, String> labels = new LinkedHashMap<>();
+
+        for (TriageLevel triageLevel : TriageLevel.values()) {
+            counts.put(triageLevel.name(), 0L);
+            labels.put(triageLevel.name(), triageLevel.getDisplayName());
+        }
+        counts.put("UNSPECIFIED", 0L);
+        labels.put("UNSPECIFIED", "Untriaged");
+
+        for (ClinicalDashboardEvent event : events) {
+            if (event.urgencyKey() == null) {
+                continue;
+            }
+            counts.put(event.urgencyKey(), counts.getOrDefault(event.urgencyKey(), 0L) + 1L);
+            labels.putIfAbsent(event.urgencyKey(), event.urgencyLabel());
+        }
+
+        return counts.entrySet().stream()
+                .filter(entry -> entry.getValue() > 0)
+                .map(entry -> new DashboardBreakdownItem(entry.getKey(), labels.get(entry.getKey()), entry.getValue()))
+                .toList();
+    }
+
+    private DashboardDurationMetric buildProcessingMetric(String label, List<ClinicalDashboardEvent> events) {
+        List<Long> samples = events.stream()
+                .map(ClinicalDashboardEvent::processingMinutes)
+                .filter(Objects::nonNull)
+                .toList();
+
+        if (samples.isEmpty()) {
+            return new DashboardDurationMetric(label, null, null, null, 0);
+        }
+
+        long minMinutes = Collections.min(samples);
+        long maxMinutes = Collections.max(samples);
+        double averageMinutes = samples.stream()
+                .mapToLong(Long::longValue)
+                .average()
+                .orElse(0.0);
+
+        return new DashboardDurationMetric(
+                label,
+                roundToSingleDecimal(averageMinutes),
+                minMinutes,
+                maxMinutes,
+                samples.size()
+        );
+    }
+
+    private List<DashboardAgeBucket> buildAgeDistribution(
+            List<ClinicalDashboardEvent> events,
+            LocalDate referenceDate
+    ) {
+        List<AgeRange> ageRanges = List.of(
+                new AgeRange("AGE_0_5", "0-5", 0, 5),
+                new AgeRange("AGE_6_17", "6-17", 6, 17),
+                new AgeRange("AGE_18_34", "18-34", 18, 34),
+                new AgeRange("AGE_35_49", "35-49", 35, 49),
+                new AgeRange("AGE_50_64", "50-64", 50, 64),
+                new AgeRange("AGE_65_PLUS", "65+", 65, null)
+        );
+
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (AgeRange ageRange : ageRanges) {
+            counts.put(ageRange.key(), 0L);
+        }
+
+        Map<UUID, LocalDate> patientsByDob = new LinkedHashMap<>();
+        for (ClinicalDashboardEvent event : events) {
+            if (event.patientId() != null && event.patientDateOfBirth() != null) {
+                patientsByDob.putIfAbsent(event.patientId(), event.patientDateOfBirth());
+            }
+        }
+
+        for (LocalDate dateOfBirth : patientsByDob.values()) {
+            int age = Period.between(dateOfBirth, referenceDate).getYears();
+            if (age < 0) {
+                continue;
+            }
+            for (AgeRange ageRange : ageRanges) {
+                if (ageRange.matches(age)) {
+                    counts.put(ageRange.key(), counts.get(ageRange.key()) + 1L);
+                    break;
+                }
+            }
+        }
+
+        return ageRanges.stream()
+                .map(ageRange -> new DashboardAgeBucket(
+                        ageRange.key(),
+                        ageRange.label(),
+                        counts.get(ageRange.key())
+                ))
+                .toList();
+    }
+
+    private Double averageTranscriptAccuracy(List<Encounter> encounters, Instant start) {
+        double average = encounters.stream()
+                .filter(encounter -> encounter.getStartedAt() != null && !encounter.getStartedAt().isBefore(start))
+                .map(Encounter::getTranscriptAccuracyScore)
+                .filter(Objects::nonNull)
+                .mapToInt(Integer::intValue)
+                .average()
+                .orElse(Double.NaN);
+
+        if (Double.isNaN(average)) {
+            return null;
+        }
+        return roundToSingleDecimal(average);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     // ==================== RETRIEVAL ====================
@@ -1298,6 +1858,10 @@ public class EncounterService {
         if (value == null) {
             return null;
         }
+        return roundToSingleDecimal(value);
+    }
+
+    private Double roundToSingleDecimal(double value) {
         return Math.round(value * 10.0) / 10.0;
     }
 
@@ -1345,20 +1909,82 @@ public class EncounterService {
     ) {
     }
 
-    public record PhysicianDashboard(
-            UUID clinicianId,
-            String clinicianName,
+    public record ClinicalDashboard(
+            String dashboardType,
+            String viewerRole,
+            String subjectLabel,
+            String activityLabel,
+            long patientsSeenToday,
             long patientsSeenWeek,
             long patientsSeenMonth,
-            long patientsSeenYear,
+            DashboardComplaint mostCommonComplaintWeek,
+            DashboardComplaint mostCommonComplaintMonth,
+            boolean recurringIssueFlagged,
+            String recurringIssueMessage,
+            List<DashboardBreakdownItem> todayCategoryBreakdown,
+            List<DashboardBreakdownItem> todayUrgencyBreakdown,
+            DashboardDurationMetric processingTimeToday,
+            List<DashboardAgeBucket> ageDistributionMonth,
             Double aiTranscriptionCorrectnessWeekPercent,
             Double aiTranscriptionCorrectnessMonthPercent,
-            Double aiTranscriptionCorrectnessYearPercent,
             String weekStartDate,
             String monthStartDate,
-            String yearStartDate,
             String generatedAt
     ) {
+    }
+
+    public record DashboardComplaint(
+            String key,
+            String label,
+            long count
+    ) {
+    }
+
+    public record DashboardBreakdownItem(
+            String key,
+            String label,
+            long count
+    ) {
+    }
+
+    public record DashboardDurationMetric(
+            String label,
+            Double averageMinutes,
+            Long minMinutes,
+            Long maxMinutes,
+            long sampleSize
+    ) {
+    }
+
+    public record DashboardAgeBucket(
+            String key,
+            String label,
+            long count
+    ) {
+    }
+
+    private record ClinicalDashboardEvent(
+            UUID patientId,
+            LocalDate patientDateOfBirth,
+            Instant occurredAt,
+            String complaint,
+            String categoryKey,
+            String categoryLabel,
+            String urgencyKey,
+            String urgencyLabel,
+            Long processingMinutes
+    ) {
+    }
+
+    private record AgeRange(
+            String key,
+            String label,
+            int minAge,
+            Integer maxAge
+    ) {
+        private boolean matches(int age) {
+            return age >= minAge && (maxAge == null || age <= maxAge);
+        }
     }
 
     public static class EncounterException extends RuntimeException {

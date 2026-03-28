@@ -351,6 +351,33 @@ public class AuthService {
         log.info("Session logout completed sessionId={}", sessionId);
     }
 
+    public void changePassword(UUID userId, String currentPassword, String newPassword) {
+        if (userId == null) {
+            throw new AuthenticationException("No active session");
+        }
+
+        User user = userRepository.findById(userId)
+                .filter(User::isActive)
+                .orElseThrow(() -> new AuthenticationException("Session user not found"));
+
+        if (user.isSystem()) {
+            throw new AuthenticationException("System accounts cannot change password from this flow");
+        }
+
+        if (!passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
+            throw new AuthenticationException("Current password is incorrect");
+        }
+
+        validatePassword(newPassword);
+        if (passwordEncoder.matches(newPassword, user.getPasswordHash())) {
+            throw new AuthenticationException("New password must be different from current password");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+        log.info("Password changed userId={} actorType={}", user.getId(), user.getActorType());
+    }
+
     private void validateAdminRegistrationInput(
             String username,
             String firstName,

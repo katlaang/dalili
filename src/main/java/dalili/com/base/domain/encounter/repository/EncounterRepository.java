@@ -31,6 +31,16 @@ public interface EncounterRepository extends ImmutableClinicalRepository<Encount
     );
 
     /**
+     * Finds encounters by clinician, status, and date range.
+     */
+    List<Encounter> findByClinicianIdAndStatusAndStartedAtBetweenOrderByStartedAtDesc(
+            UUID clinicianId,
+            Encounter.EncounterStatus status,
+            Instant start,
+            Instant end
+    );
+
+    /**
      * Finds encounter by queue ticket.
      */
     Optional<Encounter> findByQueueTicketId(UUID queueTicketId);
@@ -65,6 +75,15 @@ public interface EncounterRepository extends ImmutableClinicalRepository<Encount
      * Finds encounters started within a date range.
      */
     List<Encounter> findByStartedAtBetweenOrderByStartedAtDesc(Instant start, Instant end);
+
+    /**
+     * Finds encounters by status within a date range.
+     */
+    List<Encounter> findByStatusAndStartedAtBetweenOrderByStartedAtDesc(
+            Encounter.EncounterStatus status,
+            Instant start,
+            Instant end
+    );
 
     /**
      * Counts encounters by status within a date range.

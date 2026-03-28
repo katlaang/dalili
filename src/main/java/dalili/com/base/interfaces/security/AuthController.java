@@ -139,6 +139,21 @@ public class AuthController {
         return ResponseEntity.ok(new MessageResponse("Logged out successfully"));
     }
 
+    @PostMapping("/change-password")
+    public ResponseEntity<?> changePassword(@RequestBody ChangePasswordRequest request) {
+        UUID userId = sessionContext.userId();
+        if (userId == null) {
+            return ResponseEntity.status(401).body(new ErrorResponse("No active session"));
+        }
+
+        try {
+            authService.changePassword(userId, request.currentPassword(), request.newPassword());
+            return ResponseEntity.ok(new MessageResponse("Password changed successfully"));
+        } catch (AuthService.AuthenticationException e) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(e.getMessage()));
+        }
+    }
+
     // ==================== REGISTRATION ====================
 
     @PostMapping("/staff/register")
@@ -238,6 +253,9 @@ public class AuthController {
     }
 
     record ErrorResponse(String error) {
+    }
+
+    record ChangePasswordRequest(String currentPassword, String newPassword) {
     }
 
     record ProfileResponse(String userId, String username, String fullName, String role) {

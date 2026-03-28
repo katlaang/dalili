@@ -278,6 +278,36 @@ public class TriageService {
                     observations.emergencyContactPhone()
             );
         }
+        if (observations.pregnancyStatus() != null
+                || observations.vulnerabilityIndicators() != null
+                || observations.vulnerabilityNotes() != null) {
+            assessment.recordVulnerabilityProfile(
+                    observations.pregnancyStatus(),
+                    observations.vulnerabilityIndicators(),
+                    observations.vulnerabilityNotes()
+            );
+        }
+        if (observations.pregnancyStatus() != null
+                || observations.lastMenstrualPeriodDate() != null
+                || observations.remembersLastMenstrualPeriod() != null
+                || observations.pregnancyTestStatus() != null
+                || observations.fetalHealthCheckRequired()
+                || observations.fetalHealthNotes() != null) {
+            assessment.recordPregnancyScreening(
+                    observations.pregnancyStatus(),
+                    observations.lastMenstrualPeriodDate(),
+                    observations.remembersLastMenstrualPeriod(),
+                    observations.pregnancyTestStatus(),
+                    observations.fetalHealthCheckRequired(),
+                    observations.fetalHealthNotes()
+            );
+        }
+        if (observations.manualRedFlag() || observations.manualRedFlagReason() != null) {
+            assessment.recordManualRedFlag(
+                    observations.manualRedFlag(),
+                    observations.manualRedFlagReason()
+            );
+        }
 
         assessment = triageRepository.save(assessment);
 
@@ -416,7 +446,17 @@ public class TriageService {
             String pastMedicalHistory,
             String nursingNotes,
             String emergencyContactName,
-            String emergencyContactPhone
+            String emergencyContactPhone,
+            TriageAssessment.PregnancyStatus pregnancyStatus,
+            java.util.Set<TriageAssessment.VulnerabilityIndicator> vulnerabilityIndicators,
+            String vulnerabilityNotes,
+            java.time.LocalDate lastMenstrualPeriodDate,
+            Boolean remembersLastMenstrualPeriod,
+            TriageAssessment.PregnancyTestStatus pregnancyTestStatus,
+            boolean fetalHealthCheckRequired,
+            String fetalHealthNotes,
+            boolean manualRedFlag,
+            String manualRedFlagReason
     ) {
     }
 
